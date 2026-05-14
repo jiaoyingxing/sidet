@@ -1,0 +1,6 @@
+*
+!.gitignore
+!main.js
+!manifest.json
+!styles.css
+!versions.json
