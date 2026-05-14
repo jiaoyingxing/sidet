@@ -3,7 +3,7 @@
   "name": "Sidet",
   "version": "0.0.1",
   "minAppVersion": "1.11.4",
-  "description": "A lightweight Obsidian chat workspace with side browsing, focused threads, and note-aware knowledge capture.",
+  "description": "An easy-to-use AI chat plugin for Obsidian with side browsing, focused conversations, and note-aware knowledge capture.",
   "author": "Jiao Yingxing",
   "isDesktopOnly": false
 }

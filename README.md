@@ -2,97 +2,102 @@
 
 # Sidet
 
-Sidet is an easy-to-use AI chat plugin for Obsidian. It keeps conversation browsing on the side, the current chat in focus, and useful results easier to capture back into your vault.
+Sidet is an easy-to-use AI chat plugin for Obsidian.
 
-This public repository publishes the installable release files for Sidet. Source code is not included here.
+It is built for a simple goal: keep chat usable inside your vault without turning the whole plugin into a heavy control center. You open Sidet, switch conversations from the side, stay focused on the current chat, and bring useful notes, web pages, and images into the same flow.
+
+This public repository ships installable release files only. Source code is not included here.
 
 ## Why Sidet
 
-Many AI plugins inside note apps feel heavy: too much setup, too many switches, and too much friction before a real conversation can even start.
+Many AI plugins inside note apps ask users to carry too much setup and too many visible controls before a normal conversation can even begin.
 
 Sidet takes a lighter path:
 
 - simpler setup
-- a more natural chat flow
-- easier movement between conversation and notes
-- useful results that can continue back into your vault
+- a clearer chat-first layout
+- easier movement between conversation and vault content
+- a cleaner way to save useful results back into Obsidian
 
-## What You Get
+## What Sidet Feels Like
 
-- Simple setup without a heavy configuration flow
-- Side browsing for faster conversation switching
-- A focused chat view that feels natural for longer conversations
-- Hidden local conversation storage with export when you need it
-- Easier capture of useful results back into your vault
+### Side browsing, focused chat
 
-## Main Experience
-
-### Side browsing with a focused main chat
-
-- Browse conversations from the side without losing the current thread
-- Keep the active chat in the main view for longer reading and writing
-- Switch faster between conversations while keeping the overall layout simple
+- Browse and switch conversations from the side
+- Keep the active conversation in the main view
+- Stay closer to a normal chat experience instead of a settings-heavy workflow
 
 ### A home page you can turn into your own launcher
 
 - Sidet has its own home page inside Obsidian
-- You can pin useful commands to the home page for faster access
-- This makes common actions easier to reach without digging through menus
+- You can pin selected Obsidian commands to that page
+- These can include Sidet commands, suitable commands from other plugins, and some built-in Obsidian actions
+- This makes common actions easier to reach right after opening Sidet
 
-### Lightweight context input
+If you want, Sidet's home page can become your quick entry for everyday AI actions inside Obsidian.
 
-Sidet supports several natural ways to bring context into a conversation:
+## Bring Context In Naturally
+
+Sidet keeps the high-frequency context inputs simple:
 
 - quote Markdown notes
 - quote web pages
 - choose images
-- use `@` to quickly reference Markdown notes
+- use `@` to reference Markdown notes
 
-These inputs are attached as context instead of being dumped into the message body, which keeps the conversation cleaner and easier to manage.
+These inputs are attached as conversation context instead of being dumped into the message body. The result is easier to read, easier to manage, and easier to continue.
 
-### Easier knowledge capture
+## Capture Useful Results Back Into Your Vault
 
-Sidet does not stop at answering. It also helps move useful results back into your vault in a more structured way.
+Sidet is not only for asking questions. It also helps you continue useful results back into your own vault.
 
-- You can organize the current conversation into your knowledge base
-- Existing notes can be brought into the same knowledge flow
-- Writing actions stay confirm-first, so the result is reviewed before it changes your files
+- Organize the current conversation into your knowledge base
+- Bring existing notes into the same knowledge flow
+- Preview writing actions before anything is written to files
 
-### A simple knowledge structure
+This keeps the write-back path more usable and easier to trust.
 
-Sidet's knowledge flow currently centers on `Sidet/Wiki`, with a lightweight structure designed for continued maintenance instead of one-off dumping:
+## A Lightweight Knowledge Structure
+
+Sidet's current knowledge flow centers on `Sidet/Wiki`.
+
+It is designed to stay maintainable instead of becoming a dumping ground:
 
 - `knowledge-card` for compact long-term knowledge
 - `concept-page` for larger topics that need structure
-- `supporting-note` for related supporting material
-- `Index.md` as a top-level route page
+- `supporting-note` for supporting material
+- `Index.md` as the top route page
 
-The goal is to keep knowledge easier to revisit, connect, and update over time.
+The goal is simple: make useful knowledge easier to revisit, connect, and keep improving over time.
 
-### Better note and web capture
+## Main Things You Can Do
 
-- Web pages can be quoted into chat and previewed before sending
-- Markdown notes can be brought in as clean attachments
-- Images can be added as conversation context
-- Useful results can be exported or written back into your vault through a confirm-first flow
+- Start and switch chats quickly
+- Keep local conversation history inside the plugin
+- Export the current conversation when needed
+- Quote Markdown notes into chat
+- Quote a web page and preview it before sending
+- Choose an image as conversation context
+- Turn useful conversation results into knowledge-base work
 
-## Install
+## Home Shortcuts And Sidet Commands
 
-1. Download the files from the latest release.
-2. Place them in:
+These are two related but different things:
 
-```text
-.obsidian/plugins/sidet/
-```
+- Home shortcuts: the Sidet home page can pin up to 8 selected Obsidian commands
+- Sidet commands: the plugin also ships its own command set
 
-3. Make sure these files are present:
-   - `main.js`
-   - `manifest.json`
-   - `styles.css`
+Home shortcuts are chosen from a filtered command pool. They are not limited to Sidet itself.
 
-## Public Commands and Shortcuts
+They can include:
 
-Sidet already supports commands that can be useful as pinned home actions or regular shortcuts, including:
+- suitable Sidet commands
+- suitable commands from other plugins
+- some built-in Obsidian actions
+
+Editor-formatting commands are hidden by default, because the home page is meant to surface launch actions instead of becoming a second toolbar.
+
+Current Sidet commands include:
 
 - Open Sidet
 - New chat
@@ -101,7 +106,25 @@ Sidet already supports commands that can be useful as pinned home actions or reg
 - Insert the current selection into the draft
 - Organize the current conversation into the knowledge base
 
-This keeps the main path visible without forcing users into a heavy control center.
+## Install
+
+1. Download the files from the latest release.
+2. Put them in:
+
+```text
+.obsidian/plugins/sidet/
+```
+
+3. Make sure the folder contains:
+   - `main.js`
+   - `manifest.json`
+   - `styles.css`
+
+## Current Public Build
+
+`0.0.1` is an early public artifact release.
+
+It already covers the main chat path, conversation browsing, lightweight context input, and the first version of Sidet's knowledge capture flow. More capability will continue to grow from this base, but the current public description only covers what is already present.
 
 ## Public Repository Scope
 
