@@ -1,7 +1,7 @@
 *
 !.gitignore
 !README.md
-!README.zh-CN.md
+!README-zh.md
 !main.js
 !manifest.json
 !styles.css
