@@ -1,112 +1,106 @@
-[简体中文](./README-zh.md)
+[English](./README-en.md)
 
 # Sidet
 
-I did not build Sidet just to make another plugin that can call a model.
+我做 Sidet，起因其实很简单。
 
-What I kept seeing was this: many AI plugins have a lot of features, but they are still awkward to use. In Obsidian, a lot of them are basically narrow side panels. The input area is small, the reading area is small, and the whole thing feels cramped. On mobile, that gets worse.
+我看到很多 AI 插件功能很多，但整体用起来并不顺。尤其在 Obsidian 里，大部分还是把 AI 做成一个侧边小面板。实际上，输入和阅览就是需要尽量去占更多显示区域，不然用起来会很不舒服，手机上就更明显。
 
-What I actually wanted was simpler. I wanted to pull Obsidian's scattered entry points into one more natural main work surface. When someone opens Sidet, they should feel where to go next instead of facing a pile of features and settings first.
+所以 Sidet 现在把当前对话放在主工作区里，而不是塞在一个窄侧栏里。侧栏我直接拿来做对话列表，这样切换会话会更方便，也更像大家现在已经习惯的 AI 软件。
 
-For me, Sidet is not mainly about "chat as a feature". It is about these things:
+另外，Obsidian 原本很多入口都比较零散。我希望 Sidet 能慢慢变成一个中枢。你新建标签页以后，直接看到对话框，直接跟 AI 沟通。主页还能固定常用命令。这样你不用先去找入口，也不用先想功能藏在哪，而是可以先把眼前这件事接着做下去。
 
-- conversation as the main work surface
-- conversation itself as part of the record
-- the knowledge base as a later layer that grows out of use
+对我来说，Sidet 的重点也不是多一个聊天框。我更在意的是，它能不能让记录这件事变得更轻松。以前很多内容要靠自己做笔记、做摘录，或者从别的地方再挪回来。现在可以直接在对话里打磨。你可以带笔记、带选区、带网页、带图片，也可以带文件夹里的材料，一边聊，一边整理，把自己的理解整理清楚。
 
-## Why it looks like this
+## 现在能直接做什么
 
-I borrowed a lot from the way modern AI apps already work. The active conversation should have enough room, so Sidet keeps the current chat in the main workspace instead of squeezing it into a thin side pane. The side dock is used as the conversation list, which makes switching chats much more natural.
+### 对话本身
 
-Obsidian also has a lot of scattered entry points. I want Sidet to gradually become a center people can come back to, both to continue thinking and to move naturally into the next action.
+现在这条线里，最先成立的是对话本身。
 
-## The modules that are already part of this flow
+- 当前对话放在主工作区
+- 侧栏直接做对话列表
+- 对话支持搜索
+- 支持置顶
+- 支持文件夹整理
+- 对话历史可以保留和回看
+- 当前对话可以导出
 
-### 1. Conversation work surface
+这些东西不算花哨，但真要天天用，它们比花哨更重要。
 
-- the active conversation lives in the main workspace
-- the side dock is used as the conversation list
-- conversations support search, pinning, and folders
-- new tabs can return you to Sidet
-- the home page can pin common commands as quick entry points
+### 把内容带进当前对话
 
-These may not look like "big features", but they decide whether the product is actually usable every day.
+我很在意的一点是，你不用再手动搬很多材料，而是可以把手上的内容直接带进当前对话里。
 
-### 2. Bringing context in
+现在可以带进来的包括：
 
-One thing I care about a lot is that people should not have to keep moving material around by hand. They should be able to bring it directly into the current conversation and keep thinking.
+- 当前笔记
+- 当前选区
+- 相关笔记
+- 文件夹摘要
+- 网页
+- 图片
 
-Right now Sidet can bring in:
+这样你就不用先把材料整理成一个很正式的提问，再去找 AI。很多时候就是把眼前这点东西带进去，接着问，接着理，接着改。
 
-- the current note
-- the current selection
-- related notes
-- a folder summary
-- a webpage
-- an image
+### 主页入口
 
-Once these are in the conversation, the user can keep asking, sorting, and refining around them.
+Sidet 现在还有一个主页，主页可以固定常用命令。
+这件事我也很在意，因为 Obsidian 原本没有把命令入口放在最中间、最显眼的位置。现在你可以把自己常用的动作固定下来，打开以后直接进。
 
-### 3. Conversation history and write-back
+## 写回这件事，我为什么做得比较谨慎
 
-I do not want the result to be either "nothing gets kept" or "the plugin writes into the vault by default".
+我不希望 AI 聊完以后，结果只有两种：要么什么都不留，要么默认往库里乱写。
 
-So Sidet currently supports:
+所以 Sidet 现在的写回方式是这样的：
 
-- keeping and revisiting conversation history
-- exporting the current conversation
-- previewing write-back before anything is written
-- creating, appending, or replacing Markdown notes only after confirmation
+- 可以先看预览
+- 确认以后再创建 Markdown 笔记
+- 确认以后再追加到现有笔记
+- 确认以后再改写目标笔记
 
-This part matters a lot to me. AI can help organize your material, but it should not take over your vault.
+我觉得这样比较对。AI 可以帮你整理，但不能直接接管你的笔记库。真正要写进去的内容，应该是你看过、确认过、愿意留下的。
 
-### 4. The knowledge-base side
+## 知识库这条线，我现在是怎么接的
 
-Sidet's main axis is still AI. It is not a knowledge-base product first.
+Sidet 当前还是一条 AI 对话线，不是先做成一个知识库工具。
 
-But the way I think about this side is that knowledge should not start as manual filing. It should grow out of use. You can bring notes, links, and images into the conversation, turn them into your own understanding, and then decide what should go into `Sidet/Wiki` and what should stay in the conversation.
+但我也一直在接知识库这条线，因为很多内容聊到后面，确实会出现“这段值得留下”的时候。我的想法一直都比较直接：前面先聊，聊到有价值了，再决定要不要收进知识库。
 
-The parts already connected here include:
+目前已经接上的部分包括：
 
-- organizing the current conversation into the knowledge base
-- organizing the current note into the knowledge base
-- creating `Index.md` for a folder
-- using `Index.md` as a clearer knowledge-base entry point
+- 把当前对话整理到知识库
+- 把当前笔记整理到知识库
+- 为文件夹创建 `Index.md`
+- 用 `Index.md` 作为知识库入口
 
-I do not want to describe this as "one more knowledge feature". I think the better way to say it is that it helps your knowledge base come alive.
+对我来说，这条线的重点不在“又多了一个功能”，而在于你前面聊出来的东西，后面真的有地方可以收，也有地方可以继续用。
 
-### 5. Mobile
+## 手机端为什么单独要说
 
-I do not accept the idea that "desktop works and mobile can just be good enough".
+我不接受“桌面能用，手机凑合一下”这种思路。
 
-Sidet treats mobile as a real use case from the beginning. Desktop and mobile are not supposed to be the same layout shrunk down. On a phone, it still needs to be easy to enter, easy to continue, and easy to keep one useful result.
+手机不是一个可有可无的补充场景。你就是会在手机上看一眼、记一下、顺手问一句。屏幕本来就小，如果还把 AI 做成一个很挤的面板，那整条使用链路就更难受了。
 
-## What I care about most is not more features, but whether it feels natural
+所以 Sidet 从一开始就把手机当成真实场景在做。桌面和手机不是简单缩放关系，目标也很直接：在手机上也要能很快进入、很快继续、很快留下一条有用结果。
 
-I think software is moving toward a different direction. It is not about exposing more and more features. It is about letting people use more capability in a smoother and more natural way.
+## 如果你也有这种需求
 
-That is the direction behind Sidet too. I am not trying to make Obsidian more complicated. I am trying to make the AI side of Obsidian feel more direct and more usable. You can work through your thoughts in conversation, and you can also bring in notes, knowledge material, images, and links while you think, sort, and keep things.
+如果你本来就长期在 Obsidian 里读、写、记、整理，又希望 AI 能贴着这条工作流发生，Sidet 可能会比较适合你。
 
-Conversation is not the thing that happens before the real note.  
-Conversation is already where the record, the thinking, and the new ideas happen.
+如果你比较在意下面这些事，那大概率会觉得它顺手：
 
-## Who it fits
+- 不想离开 Obsidian 再去另一套 AI 软件里重新开始
+- 在意对话历史能不能继续回看和复用
+- 需要文件夹、搜索、置顶这些会话管理能力
+- 希望手机端不是“勉强支持”，而是真的能用
+- 希望高价值内容能沉淀下来，但又不想默认污染笔记库
 
-If you already spend a lot of time reading, writing, collecting, and organizing inside Obsidian, and you want AI to stay close to that workflow, Sidet will probably fit you.
+如果你要的是一套重型 agent 平台、满屏参数和很多后台自动化，那 Sidet 不是按那条路线做的。
 
-It fits people who:
+## 安装
 
-- do not want to leave Obsidian and restart in another AI app
-- care about conversation history being reusable
-- need folders, search, and pinning for chat management
-- want mobile to be genuinely usable, not just technically supported
-- want valuable results to settle into the vault without chat polluting it by default
+Sidet 目前通过 GitHub Releases 和 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 分发，所以暂时不能在 Community Plugins 里直接搜索安装。
 
-If what you want is a heavy agent platform, a wall of parameters, and a lot of background automation, Sidet is not built on that line.
-
-## Installation
-
-Sidet is currently distributed through GitHub Releases and [BRAT](https://github.com/TfTHacker/obsidian42-brat), so you cannot install it from the Community Plugins browser right now.
-
-If you just want to try it quickly, BRAT is usually the fastest path.  
-If you want release files and version notes, check [Releases](https://github.com/jiaoyingxing/sidet/releases).
+如果你只是想先试用，最快的方式通常是 BRAT。
+如果你想看每个版本的构筑物和更新说明，可以直接看 [Releases](https://github.com/jiaoyingxing/sidet/releases)。
