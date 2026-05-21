@@ -1,7 +1,7 @@
 {
   "id": "sidet",
   "name": "Sidet",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "minAppVersion": "1.11.4",
   "description": "An Obsidian AI chat plugin built to feel smooth, natural, mobile-friendly, and easy to keep using.",
   "author": "Jiao Yingxing",
