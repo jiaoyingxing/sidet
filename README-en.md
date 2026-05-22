@@ -1,114 +1,93 @@
 [简体中文](./README.md)
 
-# Sidet
+# 🤖 Sidet
 
-I did not build Sidet just to make another plugin that can call a model.
+AI workspace plugin for Obsidian. It keeps conversations in the main workspace, lets you bring in notes, selections, webpages, and images as context, and writes back to notes only after preview and confirmation.
 
-What I kept seeing was this: many AI plugins have a lot of features, but they are still awkward to use. In Obsidian, a lot of them are basically narrow side panels. The input area is small, the reading area is small, and the whole thing feels cramped. On mobile, that gets worse.
+---
 
-What I actually wanted was simpler. I wanted to pull Obsidian's scattered entry points into one more natural main work surface. When someone opens Sidet, they should feel where to go next instead of facing a pile of features and settings first.
+## 📌 What It Is For
 
-For me, Sidet is not mainly about "chat as a feature". It is about these things:
+Sidet keeps AI conversation in Obsidian's main workspace instead of a narrow side pane.
 
-- conversation as the main work surface
-- conversation itself as part of the record
-- the knowledge base as a later layer that grows out of use
+You talk with AI in a full working area and bring the current note, selection, webpage, image, and other material directly into context. After the conversation, you preview the output and then choose how to write it back: create a new note, append to an existing note, or replace a target note. Sidet does not write into your vault without confirmation.
 
-## Why it looks like this
+Conversation history supports search, pinning, and folder organization. Mobile is optimized as its own experience, not just a scaled-down desktop layout.
 
-I borrowed a lot from the way modern AI apps already work. The active conversation should have enough room, so Sidet keeps the current chat in the main workspace instead of squeezing it into a thin side pane. The side dock is used as the conversation list, which makes switching chats much more natural.
+It fits people who already read, write, and organize inside Obsidian and want AI to stay close to that workflow. There is no need to switch to another AI app or manually move material around.
 
-Obsidian also has a lot of scattered entry points. I want Sidet to gradually become a center people can come back to, both to continue thinking and to move naturally into the next action.
+> [!NOTE]
+> If you need a heavy agent platform, a wall of parameters, or background automation, Sidet is not built on that line.
 
-## The modules that are already part of this flow
+---
 
-### 1. Conversation work surface
+## ⚙️ Workflow
 
-- the active conversation lives in the main workspace
-- the side dock is used as the conversation list
-- conversations support search, pinning, and folders
-- new tabs can return you to Sidet
-- the home page can pin common commands as quick entry points
+1. Open a Sidet tab. New tabs can open straight into the conversation view.
+2. Bring the current note, selection, webpage, image, and other material into the conversation.
+3. Work with AI while thinking and organizing.
+4. Preview the result and confirm how it should be written back into the vault.
 
-These may not look like "big features", but they decide whether the product is actually usable every day.
+---
 
-### 2. Bringing context in
+## ✨ Features
 
-One thing I care about a lot is that people should not have to keep moving material around by hand. They should be able to bring it directly into the current conversation and keep thinking.
+| Feature | Description |
+|:---|:---|
+| 💬 Main workspace chat | The current conversation lives in the main tab, while the side pane is used only for the session list |
+| 📥 Context intake | Current note, selection, related notes, folder summary, webpage, and image |
+| 📝 Controlled write-back | Preview first, then choose to create a new note, append to an existing note, or replace a target note |
+| 📂 Conversation management | Search, pinning, folder organization, history retention, and export in the side pane |
+| 🏠 Command home | New tabs can open straight into Sidet, and the home page can pin common commands |
+| 📚 Knowledge-base capture | Organize conversations or notes into the knowledge base and generate `Index.md` for folders |
+| 📱 Mobile support | Layout and interactions are optimized specifically for phones |
 
-Right now Sidet can bring in:
+---
 
-- the current note
-- the current selection
-- related notes
-- a folder summary
-- a webpage
-- an image
+## 📝 Write-Back Rules
 
-Once these are in the conversation, the user can keep asking, sorting, and refining around them.
+There is no default automatic write-back. AI output is always previewed first, then you choose how it should be saved:
 
-### 3. Conversation history and write-back
+- Create a new Markdown note
+- Append to an existing note
+- Replace the content of a target note
 
-I do not want the result to be either "nothing gets kept" or "the plugin writes into the vault by default".
+---
 
-So Sidet currently supports:
+## 📚 Knowledge Base
 
-- keeping and revisiting conversation history
-- exporting the current conversation
-- previewing write-back before anything is written
-- creating, appending, or replacing Markdown notes only after confirmation
+Sidet uses AI conversation as its main axis. When something becomes worth keeping, it can be captured deliberately:
 
-This part matters a lot to me. AI can help organize your material, but it should not take over your vault.
+- Organize the current conversation into the knowledge base
+- Organize the current note into the knowledge base
+- Create `Index.md` for a folder as a knowledge-base entry point
 
-### 4. The knowledge-base side
+---
 
-Sidet's main axis is still AI. It is not a knowledge-base product first.
+## 🚀 Installation
 
-But the way I think about this side is that knowledge should not start as manual filing. It should grow out of use. You can bring notes, links, and images into the conversation, turn them into your own understanding, and then decide what should go into `Sidet/Wiki` and what should stay in the conversation.
+> [!WARNING]
+> Sidet is not in the official Community Plugins catalog, so it cannot be installed from Obsidian's in-app search.
 
-The parts already connected here include:
+### Option 1: BRAT (Recommended)
 
-- organizing the current conversation into the knowledge base
-- organizing the current note into the knowledge base
-- creating `Index.md` for a folder
-- using `Index.md` as a clearer knowledge-base entry point
+1. Install **BRAT** from Obsidian Community Plugins
+2. Open BRAT and choose **Add Beta plugin**
+3. Enter `https://github.com/jiaoyingxing/sidet`
+4. Enable **Sidet** in Obsidian settings after installation
 
-I do not want to describe this as "one more knowledge feature". I think the better way to say it is that it helps your knowledge base come alive.
+### Option 2: Manual Installation
 
-### 5. Mobile
+1. Download the release files from [GitHub Releases](https://github.com/jiaoyingxing/sidet/releases)
+2. Put them into `.obsidian/plugins/sidet/` inside your vault
+3. Restart Obsidian or reload community plugins
+4. Enable Sidet in settings
 
-I do not accept the idea that "desktop works and mobile can just be good enough".
+---
 
-Sidet treats mobile as a real use case from the beginning. Desktop and mobile are not supposed to be the same layout shrunk down. On a phone, it still needs to be easy to enter, easy to continue, and easy to keep one useful result.
+## 📜 License
 
-## What I care about most is not more features, but whether it feels natural
-
-I think software is moving toward a different direction. It is not about exposing more and more features. It is about letting people use more capability in a smoother and more natural way.
-
-That is the direction behind Sidet too. I am not trying to make Obsidian more complicated. I am trying to make the AI side of Obsidian feel more direct and more usable. You can work through your thoughts in conversation, and you can also bring in notes, knowledge material, images, and links while you think, sort, and keep things.
-
-Conversation is not the thing that happens before the real note. Conversation is already where the record, the thinking, and the new ideas happen.
-
-## Who it fits
-
-If you already spend a lot of time reading, writing, collecting, and organizing inside Obsidian, and you want AI to stay close to that workflow, Sidet will probably fit you.
-
-It fits people who:
-
-- do not want to leave Obsidian and restart in another AI app
-- care about conversation history being reusable
-- need folders, search, and pinning for chat management
-- want mobile to be genuinely usable, not just technically supported
-- want valuable results to settle into the vault without chat polluting it by default
-
-If what you want is a heavy agent platform, a wall of parameters, and a lot of background automation, Sidet is not built on that line.
-
-## Installation
-
-Sidet is currently distributed through GitHub Releases and [BRAT](https://github.com/TfTHacker/obsidian42-brat), so you cannot install it from the Community Plugins browser right now.
-
-If you just want to try it quickly, BRAT is usually the fastest path. If you want release files and version notes, check [Releases](https://github.com/jiaoyingxing/sidet/releases).
-
-## License
-
-Sidet is currently distributed as closed-source software. Official release files are free to use, but no source code license is granted and modified redistribution is not allowed. See [LICENSE](./LICENSE).
+- Closed-source distribution, source code is not public
+- Official release files are free to use
+- No source code license is granted, and modified redistribution is not allowed
+- See [LICENSE](./LICENSE)
