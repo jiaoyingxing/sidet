@@ -1,34 +1,26 @@
 [简体中文](./README.md)
 
-# 🤖 Sidet
+# Sidet
 
-AI workspace plugin for Obsidian. It keeps conversations in the main workspace, lets you bring in notes, selections, webpages, and images as context, and writes back to notes only after preview and confirmation.
+When you need AI inside Obsidian, Sidet opens a full conversation workspace right there, in the same way people are already used to using modern chat-style AI apps.
 
----
+History, search, and folders are all there.
 
-## 📌 What It Is For
+Notes, selections, webpages, and images can be brought straight into the conversation.
 
-Sidet keeps AI conversation in Obsidian's main workspace instead of a narrow side pane.
+After the chat, you preview the result first and then write it back.
 
-You talk with AI in a full working area and bring the current note, selection, webpage, image, and other material directly into context. After the conversation, you preview the output and then choose how to write it back: create a new note, append to an existing note, or replace a target note. Sidet does not write into your vault without confirmation.
-
-Conversation history supports search, pinning, and folder organization. Mobile is optimized as its own experience, not just a scaled-down desktop layout.
-
-It fits people who already read, write, and organize inside Obsidian and want AI to stay close to that workflow. There is no need to switch to another AI app or manually move material around.
+From thinking, to asking, to saving, the whole path stays inside Obsidian.
 
 > [!NOTE]
-> If you need a heavy agent platform, a wall of parameters, or background automation, Sidet is not built on that line.
+> If you are looking for an agent platform, a wall of parameters, or background automation, Sidet is not built on that line.
 
----
-
-## ⚙️ Workflow
+## ⚙️ How It Works
 
 1. Open a Sidet tab. New tabs can open straight into the conversation view.
 2. Bring the current note, selection, webpage, image, and other material into the conversation.
 3. Work with AI while thinking and organizing.
 4. Preview the result and confirm how it should be written back into the vault.
-
----
 
 ## ✨ Features
 
@@ -42,17 +34,13 @@ It fits people who already read, write, and organize inside Obsidian and want AI
 | 📚 Knowledge-base capture | Organize conversations or notes into the knowledge base and generate `Index.md` for folders |
 | 📱 Mobile support | Layout and interactions are optimized specifically for phones |
 
----
-
 ## 📝 Write-Back Rules
 
-There is no default automatic write-back. AI output is always previewed first, then you choose how it should be saved:
+There is no default automatic write-back. AI output is previewed first, and only then do you choose how to save it:
 
 - Create a new Markdown note
 - Append to an existing note
 - Replace the content of a target note
-
----
 
 ## 📚 Knowledge Base
 
@@ -61,8 +49,6 @@ Sidet uses AI conversation as its main axis. When something becomes worth keepin
 - Organize the current conversation into the knowledge base
 - Organize the current note into the knowledge base
 - Create `Index.md` for a folder as a knowledge-base entry point
-
----
 
 ## 🚀 Installation
 
@@ -83,11 +69,12 @@ Sidet uses AI conversation as its main axis. When something becomes worth keepin
 3. Restart Obsidian or reload community plugins
 4. Enable Sidet in settings
 
----
-
 ## 📜 License
 
 - Closed-source distribution, source code is not public
-- Official release files are free to use
 - No source code license is granted, and modified redistribution is not allowed
 - See [LICENSE](./LICENSE)
+
+## 📮 Contact
+
+Search for **焦应行** on Xiaohongshu.
