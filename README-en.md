@@ -108,3 +108,7 @@ If what you want is a heavy agent platform, a wall of parameters, and a lot of b
 Sidet is currently distributed through GitHub Releases and [BRAT](https://github.com/TfTHacker/obsidian42-brat), so you cannot install it from the Community Plugins browser right now.
 
 If you just want to try it quickly, BRAT is usually the fastest path. If you want release files and version notes, check [Releases](https://github.com/jiaoyingxing/sidet/releases).
+
+## License
+
+Sidet is currently distributed as closed-source software. Official release files are free to use, but no source code license is granted and modified redistribution is not allowed. See [LICENSE](./LICENSE).

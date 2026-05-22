@@ -104,3 +104,7 @@ Sidet 目前通过 GitHub Releases 和 [BRAT](https://github.com/TfTHacker/obsid
 
 如果你只是想先试用，最快的方式通常是 BRAT。
 如果你想看每个版本的构筑物和更新说明，可以直接看 [Releases](https://github.com/jiaoyingxing/sidet/releases)。
+
+## 许可
+
+Sidet 目前以闭源方式分发。官方发布的安装文件可以免费使用，但不提供源码授权，也不允许修改后再分发。具体见 [LICENSE](./LICENSE)。
