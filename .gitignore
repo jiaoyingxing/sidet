@@ -7,3 +7,6 @@
 !manifest.json
 !styles.css
 !versions.json
+!source-sample/
+!source-sample/sidet-0.0.1/
+!source-sample/sidet-0.0.1/**
