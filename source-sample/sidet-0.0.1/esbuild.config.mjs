@@ -9,7 +9,7 @@ const isProduction = process.argv.includes("production");
 
 await mkdir(outputDir, { recursive: true });
 await Promise.all(
-  ["styles.css", "versions.json"].map(fileName =>
+  ["manifest.json", "styles.css", "versions.json"].map(fileName =>
     copyFile(path.join(rootDir, fileName), path.join(outputDir, fileName))
   )
 );

@@ -1,0 +1,9 @@
+{
+  "id": "sidet",
+  "name": "Sidet",
+  "version": "0.0.1",
+  "minAppVersion": "1.11.4",
+  "description": "A frozen early source placeholder with a minimal notice and settings panel.",
+  "author": "Jiao Yingxing",
+  "isDesktopOnly": false
+}
