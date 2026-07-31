@@ -52,17 +52,20 @@ Sidet 以 AI 对话为主轴。聊到有价值内容时，可选择性沉淀：
 
 ## 🚀 安装
 
-> [!WARNING]
-> Sidet 不在官方 Community Plugins 目录中，应用内无法直接搜索安装。
+### 方式一：社区插件（推荐）
 
-### 方式一：BRAT（推荐）
+1. 打开 Obsidian 设置，进入 **社区插件**
+2. 搜索 **Sidet**
+3. 安装并启用插件
+
+### 方式二：BRAT
 
 1. 在 Obsidian 社区插件中安装 **BRAT**
 2. 打开 BRAT，选择 **Add Beta plugin**
 3. 输入 `https://github.com/jiaoyingxing/sidet`
 4. 安装完成后，在 Obsidian 设置中启用 **Sidet**
 
-### 方式二：手动安装
+### 方式三：手动安装
 
 1. 从 [GitHub Releases](https://github.com/jiaoyingxing/sidet/releases) 下载安装文件
 2. 放入 vault 的 `.obsidian/plugins/sidet/` 目录

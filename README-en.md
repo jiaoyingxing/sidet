@@ -52,17 +52,20 @@ Sidet uses AI conversation as its main axis. When something becomes worth keepin
 
 ## 🚀 Installation
 
-> [!WARNING]
-> Sidet is not in the official Community Plugins catalog, so it cannot be installed from Obsidian's in-app search.
+### Option 1: Community Plugins (Recommended)
 
-### Option 1: BRAT (Recommended)
+1. Open Obsidian settings and go to **Community plugins**
+2. Search for **Sidet**
+3. Install and enable the plugin
+
+### Option 2: BRAT
 
 1. Install **BRAT** from Obsidian Community Plugins
 2. Open BRAT and choose **Add Beta plugin**
 3. Enter `https://github.com/jiaoyingxing/sidet`
 4. Enable **Sidet** in Obsidian settings after installation
 
-### Option 2: Manual Installation
+### Option 3: Manual Installation
 
 1. Download the release files from [GitHub Releases](https://github.com/jiaoyingxing/sidet/releases)
 2. Put them into `.obsidian/plugins/sidet/` inside your vault
