@@ -58,7 +58,7 @@ Sidet does not include a model account. You provide and manage the model service
 
 Knowledge-base search can target one knowledge base or all of them. Search currently runs locally with keywords and does not call a model. To organize new material, you can turn the current conversation or note into a knowledge card; Sidet shows a plan or content preview before writing.
 
-Knowledge bases use `Index.md` as the folder entry point. Sidet can create a knowledge-base root page for a selected folder. Maintenance for historical Sidet Wiki-card formatting is available under **Settings → Sidet → Data and export** and asks for confirmation before making changes. Files are created or modified only after user confirmation.
+Knowledge bases use `Index.md` as the folder entry point. Sidet can create a knowledge-base root page for a selected folder. Maintenance for historical Sidet Wiki-card formatting is available under **Settings → Sidet → Data export** and asks for confirmation before making changes. Files are created or modified only after user confirmation.
 
 ## 8. 🌐 Webpages and Web Search
 
