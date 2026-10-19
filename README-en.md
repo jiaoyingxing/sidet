@@ -18,7 +18,7 @@
   </a>
 </p>
 
-Sidet turns Obsidian's new tab into an AI chat home page, ready to bring in the current note, selections, webpages, and images as needed.
+Turns Obsidian's new tab into an AI chat home page, ready to bring in the current note, selections, webpages, and images as needed.
 
 Any command—whether native to Obsidian or from another plugin—can also be pinned as a home-page icon, or bound to a URL for one-click invocation from shortcuts.
 
