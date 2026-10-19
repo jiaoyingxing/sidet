@@ -10,9 +10,6 @@
   <a href="https://community.obsidian.md/plugins/sidet">
     <img alt="Obsidian Plugin" src="https://img.shields.io/badge/Obsidian-Plugin-7c3aed?style=flat-square" />
   </a>
-  <a href="./LICENSE">
-    <img alt="License" src="https://img.shields.io/badge/License-Closed--source-lightgrey?style=flat-square" />
-  </a>
   <a href="./README.md">
     <img alt="CN 中文版" src="https://img.shields.io/badge/CN-%E4%B8%AD%E6%96%87%E7%89%88-d32f2f?style=flat-square" />
   </a>
