@@ -1,0 +1,41 @@
+{
+  "name": "sidet",
+  "version": "0.3.5",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "build": "node esbuild.config.mjs production",
+    "build:dev": "node esbuild.config.mjs",
+    "dev": "npm run build:dev",
+    "check:meta": "node ./scripts/check-metadata.mjs --project .",
+    "test:logic": "node ./scripts/test-logic.mjs",
+    "test": "node ./scripts/test-logic.mjs",
+    "check": "npm run typecheck && npm run lint && npm run test:logic && npm run check:meta && npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jiaoyingxing/sidet.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jiaoyingxing/sidet/issues"
+  },
+  "homepage": "https://github.com/jiaoyingxing/sidet#readme",
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "esbuild": "^0.25.2",
+    "eslint": "9.39.5",
+    "eslint-plugin-obsidianmd": "0.4.2",
+    "obsidian": "1.13.1",
+    "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "defuddle": "^0.18.1",
+    "turndown": "^7.2.4"
+  }
+}

@@ -18,6 +18,22 @@
   </a>
 </p>
 
+## English quick start
+
+Sidet turns Obsidian's new tab into an AI chat home page. Notes, selections, webpages, and images can be brought into a conversation, and commands from Obsidian or other plugins can be pinned to the home page or bound to a URL.
+
+### Installation
+
+1. Open **Settings → Community plugins**.
+2. Search for **Sidet**, then select **Install** and **Enable**.
+3. Sidet requires Obsidian `1.11.4` or later.
+
+### Usage
+
+Open a new tab to reach the Sidet home page, then type a question or choose a context source. Model configurations and API keys are managed in **Settings → Sidet**. Conversations stay in local plugin data until you confirm a write-back.
+
+The full English guide is available in [README-en.md](./README-en.md).
+
 把 Obsidian 的新标签页变成 AI 对话主页，笔记、选区、网页与图片都可随需带入对话。
 
 同时，任意命令——无论来自 Obsidian 原生还是其他插件——均可设为主页图标，或绑定为 URL 供快捷键一键调用。
@@ -105,6 +121,7 @@ Sidet 不附带模型账号。模型服务、账号、API Key、调用费用和�
 
 - 作者不收集用户的 API Key、对话内容、笔记内容或其他个人信息；
 - 使用云端模型、联网搜索或网页服务时，完成请求所需的内容会进入用户自行选择的第三方服务链路。相关服务的费用、限制和数据处理规则以对应服务商为准；
+- 模型请求只会发送到你为该模型配置的接口地址；联网搜索会把搜索词发送给内置搜索服务（必应、百度、搜狗），GitHub 相关查询会请求 GitHub API；添加网页时会请求你输入的网页地址；
 - Sidet 不会默认改动笔记，也不在后台自动执行任务。涉及创建、追加或改写笔记的操作都需要用户确认；
 - 重要笔记仍建议保留独立备份。
 
@@ -138,11 +155,11 @@ Sidet 需要 Obsidian `1.11.4` 或更高版本。
 3. 重启 Obsidian，或重新加载社区插件。
 4. 在设置中启用 Sidet。
 
-## 13. 许可
+## 13. 许可与源码
 
-- Sidet 采用闭源分发，源码不公开。
-- 不提供源码授权，不允许修改后再分发。
-- 详细条款见 [LICENSE](./LICENSE)。
+- Sidet 采用 MIT 许可证，源码公开在 [GitHub 仓库](https://github.com/jiaoyingxing/sidet)。
+- 本地构建需要 Node.js 20 或更新版本：`npm ci`，然后 `npm run build`，产物为 `main.js`；`npm run test:logic` 跑逻辑测试。
+- 详细条款见 [LICENSE](./LICENSE)，第三方依赖许可见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
 ## 14. 联系
 

@@ -105,6 +105,7 @@ Conversations you no longer use can be archived. Archived conversations remain r
 
 - The author does not collect your API keys, conversations, notes, or other personal information.
 - When you use a cloud model, web search, or a webpage service, the content required for the request is sent through the third-party service you configured. Its fees, limits, and data practices are governed by that provider.
+- Model requests go only to the endpoint configured for that model. Web search sends the query to the built-in search providers (Bing, Baidu, Sogou); GitHub-focused searches call the GitHub API; adding a webpage requests the URL you provide.
 - Sidet does not modify notes by default or run autonomous background tasks. Creating, appending, or replacing a note requires confirmation.
 - Keep independent backups of important notes.
 
@@ -138,11 +139,11 @@ Sidet requires Obsidian `1.11.4` or later.
 3. Restart Obsidian or reload community plugins.
 4. Enable Sidet in settings.
 
-## 13. License
+## 13. License and source
 
-- Sidet is distributed as closed-source software; the source code is not public.
-- No source-code license is granted, and modified redistribution is not allowed.
-- See [LICENSE](./LICENSE) for the full terms.
+- Sidet is released under the MIT License; the source code is public in the [GitHub repository](https://github.com/jiaoyingxing/sidet).
+- Building locally requires Node.js 20 or newer: run `npm ci`, then `npm run build` to produce `main.js`; run `npm run test:logic` for the logic tests.
+- See [LICENSE](./LICENSE) for the full terms and [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for third-party notices.
 
 ## 14. Contact
 

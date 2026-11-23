@@ -1,0 +1,648 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
+import { build } from "esbuild";
+
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const tempDirs = [];
+
+async function loadBundledModule(relativePath) {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "sidet-chat-scroll-logic-"));
+  tempDirs.push(tempDir);
+  const outfile = path.join(tempDir, `${path.basename(relativePath, ".ts")}.mjs`);
+
+  await build({
+    entryPoints: [path.join(rootDir, relativePath)],
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    alias: {
+      obsidian: path.join(rootDir, "scripts", "test-stubs", "obsidian.ts")
+    },
+    outfile,
+    logLevel: "silent"
+  });
+
+  return import(`${pathToFileURL(outfile).href}?t=${Date.now()}`);
+}
+
+function installFakeWindow() {
+  const frameQueue = [];
+  const cancelled = new Set();
+  const timeoutQueue = [];
+  const clearedTimeouts = new Set();
+  let nextFrameId = 1;
+  let nextTimeoutId = 1;
+
+  globalThis.window = {
+    requestAnimationFrame(callback) {
+      const id = nextFrameId++;
+      frameQueue.push({ id, callback });
+      return id;
+    },
+    cancelAnimationFrame(id) {
+      cancelled.add(id);
+    },
+    setTimeout(callback, delay = 0) {
+      const id = nextTimeoutId++;
+      timeoutQueue.push({ id, callback, delay });
+      return id;
+    },
+    clearTimeout(id) {
+      clearedTimeouts.add(id);
+    }
+  };
+
+  return {
+    flushFrames() {
+      while (frameQueue.length > 0) {
+        const { id, callback } = frameQueue.shift();
+        if (cancelled.has(id)) {
+          continue;
+        }
+        callback(0);
+      }
+    },
+    flushTimeouts() {
+      timeoutQueue.sort((left, right) => left.delay - right.delay);
+      while (timeoutQueue.length > 0) {
+        const { id, callback } = timeoutQueue.shift();
+        if (clearedTimeouts.has(id)) {
+          continue;
+        }
+        callback();
+      }
+    }
+  };
+}
+
+function createRendering(module) {
+  const scrollHost = {
+    scrollTop: 160,
+    scrollHeight: 1200,
+    clientHeight: 400
+  };
+  let pinnedToBottom = false;
+  let syncCalls = 0;
+
+  const rendering = new module.ChatViewAssistantRendering({
+    getApp: () => ({
+      workspace: {
+        getActiveFile: () => null
+      }
+    }),
+    addChild: () => undefined,
+    trackMessageRenderComponent: () => undefined,
+    getScrollHost: () => scrollHost,
+    setScrollHostTop: (scrollTop) => {
+      scrollHost.scrollTop = scrollTop;
+    },
+    syncScrollAffordances: () => {
+      syncCalls += 1;
+    },
+    getScrollBottomTarget: (host = scrollHost) => Math.max(0, host.scrollHeight - host.clientHeight),
+    getScrollPinnedToBottom: () => pinnedToBottom,
+    setScrollPinnedToBottom: (value) => {
+      pinnedToBottom = value;
+    },
+    getLastConversationId: () => null,
+    getLastRenderedMessageCount: () => 0,
+    setLastRenderedMessageCount: () => undefined,
+    getMarkdownRenderGeneration: () => 0,
+    buildMessageRevision: () => null,
+    setLastMessageRevision: () => undefined,
+    syncComposerButtons: () => undefined,
+    getConversationForCurrentLeaf: () => null,
+    getConversationById: () => null,
+    getCurrentConversationId: () => null,
+    getMessagesListEl: () => null,
+    renderConversation: () => undefined,
+    setPlainMessageContent: () => undefined,
+    renderInlineToolAction: () => undefined,
+    renderWikiMaintenancePlanAction: () => undefined,
+    importWebSearchResultUrl: () => undefined
+  });
+
+  return {
+    rendering,
+    scrollHost,
+    getPinnedToBottom: () => pinnedToBottom,
+    getSyncCalls: () => syncCalls
+  };
+}
+
+function createFakeContentElement() {
+  return {
+    textContent: "",
+    ownerDocument: {
+      createElement: () => createFakeContentElement()
+    },
+    empty() {
+      this.textContent = "";
+    },
+    removeClass() {
+      // no-op
+    },
+    addClass() {
+      // no-op
+    },
+    setText(text) {
+      this.textContent = text;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    appendChild() {
+      // no-op
+    }
+  };
+}
+
+function assertAfterSendRestoresBottomInRaf(module) {
+  const windowHarness = installFakeWindow();
+  const { rendering, scrollHost, getPinnedToBottom, getSyncCalls } = createRendering(module);
+  let clearCalls = 0;
+
+  const nextState = rendering.restoreMessageScroll(
+    {
+      conversationId: "conv-1",
+      scrollTop: 160,
+      pinnedToBottom: false
+    },
+    "conv-1",
+    "conv-1:2:user:done:15:0:0",
+    {
+      lastConversationId: "conv-1",
+      lastMessageRevision: "conv-1:1:user:done:5:0:0",
+      pendingScrollIntent: "after-send"
+    },
+    {
+      clearPendingScrollIntent: () => {
+        clearCalls += 1;
+      }
+    }
+  );
+
+  assert.equal(nextState.lastConversationId, "conv-1");
+  assert.equal(nextState.lastMessageRevision, "conv-1:2:user:done:15:0:0");
+  assert.equal(clearCalls, 0, "pending scroll intent should not clear before RAF applies bottom scroll");
+  assert.equal(scrollHost.scrollTop, 160, "scroll position should stay untouched before RAF runs");
+
+  windowHarness.flushFrames();
+
+  assert.equal(clearCalls, 1, "pending scroll intent should clear after RAF bottom scroll runs");
+  assert.equal(scrollHost.scrollTop, 800, "after-send should scroll to the live bottom target");
+  assert.equal(getPinnedToBottom(), true, "after-send should pin the scroll state to bottom");
+  assert.equal(getSyncCalls(), 1, "after-send should resync affordances once after applying bottom scroll");
+}
+
+function assertQueueScrollIntentCancelsComposerRestore(module) {
+  let composerRestoreCancelCalls = 0;
+  const runtime = new module.ChatViewConversationRuntime({
+    controller: {},
+    leaf: {},
+    assistantRendering: {},
+    messageActions: {},
+    getMessagesListEl: () => null,
+    addChild: () => undefined,
+    trackMessageRenderComponent: () => undefined,
+    resetMessageRenderComponents: () => undefined,
+    renderAssistantMetaBlocks: () => undefined,
+    shouldRenderAssistantMessageMarkdown: () => false,
+    setPlainMessageContent: () => undefined,
+    renderInlineToolAction: () => undefined,
+    renderWikiMaintenancePlanAction: () => undefined,
+    openWebpageAttachmentPreview: () => undefined,
+    syncComposerButtons: () => undefined,
+    syncLeafHeader: () => undefined,
+    syncScrollAffordances: () => undefined,
+    getScrollHost: () => ({ scrollTop: 0 }),
+    getScrollPinnedToBottom: () => false,
+    setScrollHostTop: () => undefined,
+    setScrollPinnedToBottom: () => undefined,
+    closeInlineSuggests: () => undefined,
+    cancelComposerScrollRestore: () => {
+      composerRestoreCancelCalls += 1;
+    }
+  });
+
+  runtime.queueScrollIntent("after-send");
+
+  assert.equal(composerRestoreCancelCalls, 1, "queueing explicit scroll should cancel composer restore");
+}
+
+function assertKnowledgeBaseRoutingUpdateInvalidatesConversationRender(module) {
+  const runtime = new module.ChatViewConversationRuntime({
+    controller: {},
+    leaf: {},
+    assistantRendering: {},
+    messageActions: {},
+    getMessagesListEl: () => null,
+    addChild: () => undefined,
+    trackMessageRenderComponent: () => undefined,
+    resetMessageRenderComponents: () => undefined,
+    renderAssistantMetaBlocks: () => undefined,
+    shouldRenderAssistantMessageMarkdown: () => false,
+    setPlainMessageContent: () => undefined,
+    renderInlineToolAction: () => undefined,
+    renderWikiMaintenancePlanAction: () => undefined,
+    openWebpageAttachmentPreview: () => undefined,
+    syncComposerButtons: () => undefined,
+    syncLeafHeader: () => undefined,
+    syncScrollAffordances: () => undefined,
+    getScrollHost: () => ({ scrollTop: 0 }),
+    getScrollPinnedToBottom: () => false,
+    setScrollHostTop: () => undefined,
+    setScrollPinnedToBottom: () => undefined,
+    closeInlineSuggests: () => undefined,
+    cancelComposerScrollRestore: () => undefined
+  });
+  const conversation = {
+    id: "conv-kb",
+    messages: [
+      {
+        id: "user-kb",
+        role: "user",
+        text: "同步",
+        status: "done",
+        knowledgeBaseRouting: {
+          mode: "all",
+          displayName: "全部知识库",
+          status: "searching",
+          resultCount: 0,
+          hits: []
+        }
+      },
+      {
+        id: "assistant-kb",
+        role: "assistant",
+        text: "",
+        status: "streaming"
+      }
+    ]
+  };
+
+  const searchingRevision = runtime.buildMessageRevision(conversation);
+  conversation.messages[0].knowledgeBaseRouting = {
+    mode: "all",
+    displayName: "全部知识库",
+    status: "complete",
+    resultCount: 1,
+    hits: [
+      {
+        path: "Sidet/Wiki/同步常见问题.md",
+        basename: "同步常见问题",
+        kindLabel: "Wiki"
+      }
+    ]
+  };
+  const completeRevision = runtime.buildMessageRevision(conversation);
+
+  assert.notEqual(
+    completeRevision,
+    searchingRevision,
+    "routing metadata on the user message must rerender immediately even while the assistant placeholder is still the last message"
+  );
+}
+
+function assertKnowledgeBaseRoutingUpdateBypassesLatestAssistantPatch(module) {
+  let fullRenderCalls = 0;
+  let assistantPatchCalls = 0;
+  const conversation = {
+    id: "conv-kb-live",
+    messages: [
+      {
+        id: "user-kb-live",
+        role: "user",
+        text: "同步",
+        status: "done",
+        knowledgeBaseRouting: {
+          mode: "all",
+          displayName: "全部知识库",
+          status: "searching",
+          resultCount: 0,
+          hits: []
+        }
+      },
+      {
+        id: "assistant-kb-live",
+        role: "assistant",
+        text: "# 知识库检索结果",
+        status: "streaming"
+      }
+    ]
+  };
+  const controller = {
+    getChatLeafState: () => ({ conversationId: conversation.id }),
+    store: {
+      getConversation: () => conversation
+    }
+  };
+  const runtime = new module.ChatViewConversationRuntime({
+    controller,
+    leaf: {},
+    assistantRendering: {
+      canPatchLatestAssistantMessage: () => true,
+      patchLatestAssistantMessage: () => {
+        assistantPatchCalls += 1;
+        return true;
+      }
+    },
+    messageActions: {},
+    getMessagesListEl: () => null,
+    addChild: () => undefined,
+    trackMessageRenderComponent: () => undefined,
+    resetMessageRenderComponents: () => undefined,
+    renderAssistantMetaBlocks: () => undefined,
+    shouldRenderAssistantMessageMarkdown: () => false,
+    setPlainMessageContent: () => undefined,
+    renderInlineToolAction: () => undefined,
+    renderWikiMaintenancePlanAction: () => undefined,
+    openWebpageAttachmentPreview: () => undefined,
+    syncComposerButtons: () => undefined,
+    syncLeafHeader: () => undefined,
+    syncScrollAffordances: () => undefined,
+    getScrollHost: () => ({ scrollTop: 0 }),
+    getScrollPinnedToBottom: () => false,
+    setScrollHostTop: () => undefined,
+    setScrollPinnedToBottom: () => undefined,
+    closeInlineSuggests: () => undefined,
+    cancelComposerScrollRestore: () => undefined
+  });
+  runtime.lastConversationId = conversation.id;
+  runtime.lastMessageRevision = runtime.buildMessageRevision(conversation);
+  runtime.lastKnowledgeBaseRoutingRevision = [
+    "user-kb-live",
+    "all",
+    "全部知识库",
+    "searching",
+    0,
+    ""
+  ].join(":");
+  runtime.renderConversation = () => {
+    fullRenderCalls += 1;
+  };
+
+  conversation.messages[0].knowledgeBaseRouting = {
+    mode: "all",
+    displayName: "全部知识库",
+    status: "complete",
+    resultCount: 1,
+    hits: [
+      {
+        path: "Sidet/Wiki/同步常见问题.md",
+        basename: "同步常见问题",
+        kindLabel: "Wiki"
+      }
+    ]
+  };
+  runtime.handleStoreChange();
+
+  assert.equal(
+    assistantPatchCalls,
+    0,
+    "routing changes on the preceding user message must not be swallowed by the latest-assistant patch path"
+  );
+  assert.equal(
+    fullRenderCalls,
+    1,
+    "routing changes on the preceding user message must rerender the conversation in the current view"
+  );
+}
+
+function assertLegacyMobileScrollCompensationsStayRemoved() {
+  const composerSource = readFileSync(
+    path.join(rootDir, "src", "workspace", "chat-view-mobile-composer.ts"),
+    "utf8"
+  );
+  const layerSource = readFileSync(
+    path.join(rootDir, "src", "workspace", "chat-view-mobile-composer-layer.ts"),
+    "utf8"
+  );
+  const chatViewSource = readFileSync(
+    path.join(rootDir, "src", "workspace", "chat-view.ts"),
+    "utf8"
+  );
+  const css = readFileSync(path.join(rootDir, "styles.css"), "utf8");
+
+  for (const source of [composerSource, chatViewSource]) {
+    assert.doesNotMatch(
+      source,
+      /MobileComposerBlurScrollRestore|mobile-blur-scroll-restore/,
+      "blur must not replay a delayed scrollTop compatibility chain"
+    );
+    assert.doesNotMatch(
+      source,
+      /FocusLock|focus-locked|shouldLockShortMobileComposerFocus/,
+      "short conversations must not use a second focus-lock state"
+    );
+  }
+  assert.doesNotMatch(
+    composerSource,
+    /getMobileFocusedReservedSpace|shouldReserveMobileFocusedComposerSpace/,
+    "focused composer spacing must be derived from the active body layer, not a second reserve formula"
+  );
+  assert.doesNotMatch(
+    composerSource,
+    /mobile-toolbar|mobile-navbar|workspace-drawer\.mod-bottom|mobileBottomChromeFallback/,
+    "the resting baseline must not scan private host chrome selectors"
+  );
+  assert.doesNotMatch(
+    layerSource,
+    /attachmentFocusRestoreTimers|\[80,\s*220\]/,
+    "attachment return must use one focus handoff instead of timer retries"
+  );
+  assert.doesNotMatch(
+    css,
+    /is-mobile-composer-focus-locked/,
+    "the retired focus-lock presentation must not remain in CSS"
+  );
+  assert.doesNotMatch(
+    css,
+    /scroll-padding-bottom:\s*var\(--sidet-composer-reserved-space\)/,
+    "the message spacer must be the single reserved-space representation"
+  );
+}
+
+function assertFollowLatestUsesSnapshotPinnedState(module) {
+  const windowHarness = installFakeWindow();
+  const { rendering, scrollHost, getPinnedToBottom, getSyncCalls } = createRendering(module);
+  scrollHost.scrollTop = 0;
+
+  const nextState = rendering.restoreMessageScroll(
+    {
+      conversationId: "conv-1",
+      scrollTop: 876,
+      pinnedToBottom: true
+    },
+    "conv-1",
+    "conv-1:6:assistant:streaming:0:0:0",
+    {
+      lastConversationId: "conv-1",
+      lastMessageRevision: "conv-1:5:user:done:15:0:0",
+      pendingScrollIntent: "none"
+    },
+    {
+      clearPendingScrollIntent: () => undefined
+    }
+  );
+
+  assert.equal(nextState.lastConversationId, "conv-1");
+  assert.equal(nextState.lastMessageRevision, "conv-1:6:assistant:streaming:0:0:0");
+
+  windowHarness.flushFrames();
+  windowHarness.flushFrames();
+
+  assert.equal(
+    scrollHost.scrollTop,
+    800,
+    "full rerender should still snap back to bottom when snapshot says the user was pinned before render"
+  );
+  assert.equal(getPinnedToBottom(), true, "follow-latest should keep pinned state true after rerender");
+  assert.ok(getSyncCalls() >= 1, "follow-latest should resync affordances after restoring bottom");
+}
+
+async function assertManagedConversationRenderOwnsScrollRestoration(module) {
+  const windowHarness = installFakeWindow();
+  const scrollHost = {
+    scrollTop: 0,
+    scrollHeight: 1200,
+    clientHeight: 400
+  };
+  const setScrollCalls = [];
+
+  const rendering = new module.ChatViewAssistantRendering({
+    getApp: () => ({
+      workspace: {
+        getActiveFile: () => null
+      }
+    }),
+    addChild: () => undefined,
+    trackMessageRenderComponent: () => undefined,
+    getScrollHost: () => scrollHost,
+    setScrollHostTop: (scrollTop) => {
+      setScrollCalls.push(scrollTop);
+      scrollHost.scrollTop = scrollTop;
+    },
+    syncScrollAffordances: () => undefined,
+    getScrollBottomTarget: (host = scrollHost) => Math.max(0, host.scrollHeight - host.clientHeight),
+    getScrollPinnedToBottom: () => false,
+    setScrollPinnedToBottom: () => undefined,
+    getLastConversationId: () => "conv-1",
+    getLastRenderedMessageCount: () => 2,
+    setLastRenderedMessageCount: () => undefined,
+    getMarkdownRenderGeneration: () => 1,
+    buildMessageRevision: () => "rev-1",
+    setLastMessageRevision: () => undefined,
+    syncComposerButtons: () => undefined,
+    getConversationForCurrentLeaf: () => null,
+    getConversationById: () => null,
+    getCurrentConversationId: () => "conv-1",
+    getMessagesListEl: () => null,
+    renderConversation: () => undefined,
+    setPlainMessageContent: () => undefined,
+    renderInlineToolAction: () => undefined,
+    renderWikiMaintenancePlanAction: () => undefined,
+    importWebSearchResultUrl: () => undefined
+  });
+
+  await rendering.renderAssistantMarkdown(createFakeContentElement(), "hello", {}, {
+    conversationId: "conv-1",
+    renderGeneration: 1,
+    managedScrollRestore: true
+  });
+  windowHarness.flushFrames();
+
+  assert.deepEqual(
+    setScrollCalls,
+    [],
+    "full conversation render should not let markdown renderer replay its own preserved scroll snapshot"
+  );
+}
+
+async function assertPatchedAssistantRenderCanStillRestorePreservedScroll(module) {
+  const windowHarness = installFakeWindow();
+  const scrollHost = {
+    scrollTop: 0,
+    scrollHeight: 1200,
+    clientHeight: 400
+  };
+  const setScrollCalls = [];
+
+  const rendering = new module.ChatViewAssistantRendering({
+    getApp: () => ({
+      workspace: {
+        getActiveFile: () => null
+      }
+    }),
+    addChild: () => undefined,
+    trackMessageRenderComponent: () => undefined,
+    getScrollHost: () => scrollHost,
+    setScrollHostTop: (scrollTop) => {
+      setScrollCalls.push(scrollTop);
+      scrollHost.scrollTop = scrollTop;
+    },
+    syncScrollAffordances: () => undefined,
+    getScrollBottomTarget: (host = scrollHost) => Math.max(0, host.scrollHeight - host.clientHeight),
+    getScrollPinnedToBottom: () => false,
+    setScrollPinnedToBottom: () => undefined,
+    getLastConversationId: () => "conv-1",
+    getLastRenderedMessageCount: () => 2,
+    setLastRenderedMessageCount: () => undefined,
+    getMarkdownRenderGeneration: () => 1,
+    buildMessageRevision: () => "rev-1",
+    setLastMessageRevision: () => undefined,
+    syncComposerButtons: () => undefined,
+    getConversationForCurrentLeaf: () => null,
+    getConversationById: () => ({
+      id: "conv-1",
+      messages: [{ id: "msg-1", status: "done" }]
+    }),
+    getCurrentConversationId: () => "conv-1",
+    getMessagesListEl: () => null,
+    renderConversation: () => undefined,
+    setPlainMessageContent: () => undefined,
+    renderInlineToolAction: () => undefined,
+    renderWikiMaintenancePlanAction: () => undefined,
+    importWebSearchResultUrl: () => undefined
+  });
+
+  await rendering.renderAssistantMarkdown(createFakeContentElement(), "hello", {}, {
+    conversationId: "conv-1",
+    renderGeneration: 1,
+    messageId: "msg-1"
+  });
+  windowHarness.flushFrames();
+
+  assert.deepEqual(
+    setScrollCalls,
+    [0],
+    "patched assistant render should keep its local preserved-scroll replay behavior"
+  );
+}
+
+async function main() {
+  try {
+    const assistantRenderingModule = await loadBundledModule("src/workspace/chat-view-assistant-rendering.ts");
+    const conversationRuntimeModule = await loadBundledModule("src/workspace/chat-view-conversation-runtime.ts");
+    assertAfterSendRestoresBottomInRaf(assistantRenderingModule);
+    assertFollowLatestUsesSnapshotPinnedState(assistantRenderingModule);
+    assertQueueScrollIntentCancelsComposerRestore(conversationRuntimeModule);
+    assertKnowledgeBaseRoutingUpdateInvalidatesConversationRender(conversationRuntimeModule);
+    assertKnowledgeBaseRoutingUpdateBypassesLatestAssistantPatch(conversationRuntimeModule);
+    assertLegacyMobileScrollCompensationsStayRemoved();
+    await assertManagedConversationRenderOwnsScrollRestoration(assistantRenderingModule);
+    await assertPatchedAssistantRenderCanStillRestorePreservedScroll(assistantRenderingModule);
+    console.log("chat scroll logic test passed");
+  } finally {
+    delete globalThis.window;
+    delete globalThis.document;
+    for (const tempDir of tempDirs) {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }
+}
+
+await main();
