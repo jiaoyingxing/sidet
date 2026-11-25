@@ -45,6 +45,9 @@ async function main() {
   const content = { name: "content" };
   const inlineA = { name: "inline-a" };
   const inlineB = { name: "inline-b" };
+  const answerSources = { name: "answer-sources" };
+  const answerVersions = { name: "answer-versions" };
+  const answerActions = { name: "answer-actions" };
   const status = { name: "status" };
   const panel = { name: "panel" };
   const link = { name: "link" };
@@ -63,6 +66,9 @@ async function main() {
     },
     many: {
       ".sidet-agent-inline-action, .sidet-wiki-plan-followup": [inlineA, inlineB],
+      ".sidet-answer-sources": [answerSources],
+      ".sidet-answer-versions": [answerVersions],
+      ".sidet-answer-actions, .sidet-answer-error": [answerActions],
       ".sidet-message-status-line": [status],
       ".sidet-message-meta-panel": [panel],
       "a[href]": [link]
@@ -71,6 +77,9 @@ async function main() {
 
   assert.equal(module.findAssistantMessageContent(root), content);
   assert.deepEqual(module.findAssistantInlineActions(root), [inlineA, inlineB]);
+  assert.deepEqual(module.findAssistantAnswerSources(root), [answerSources]);
+  assert.deepEqual(module.findAssistantAnswerVersions(root), [answerVersions]);
+  assert.deepEqual(module.findAssistantAnswerActions(root), [answerActions]);
   assert.deepEqual(module.findAssistantStatusLines(root), [status]);
   assert.deepEqual(module.findAssistantMetaPanels(root), [panel]);
   assert.deepEqual(module.findAssistantLinks(root), [link]);
@@ -79,6 +88,9 @@ async function main() {
   const empty = createRoot();
   assert.equal(module.findAssistantMessageContent(empty), null);
   assert.deepEqual(module.findAssistantInlineActions(empty), []);
+  assert.deepEqual(module.findAssistantAnswerSources(empty), []);
+  assert.deepEqual(module.findAssistantAnswerVersions(empty), []);
+  assert.deepEqual(module.findAssistantAnswerActions(empty), []);
   assert.deepEqual(module.findAssistantStatusLines(empty), []);
   assert.deepEqual(module.findAssistantMetaPanels(empty), []);
   assert.deepEqual(module.findAssistantLinks(empty), []);

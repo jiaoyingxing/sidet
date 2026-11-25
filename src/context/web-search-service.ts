@@ -1,4 +1,8 @@
 import { requestUrl } from "obsidian";
+import {
+  mergeRankedSearchBatches,
+  type SearchResultBatch
+} from "./web-search-ranking";
 
 export interface WebSearchResult {
   title: string;
@@ -39,6 +43,8 @@ interface SearchResultPayload {
 
 interface SearchOptions {
   onProgress?: (event: WebSearchProgressEvent) => void;
+  /** 单次 searchMany 最多执行多少组查询；默认沿用 3，检索研究路径可放宽到 4。 */
+  maxQueries?: number;
 }
 
 interface ProviderHealthState {
@@ -54,16 +60,12 @@ interface WebSearchServiceOptions {
   now?: () => number;
 }
 
-interface SearchProviderBatch {
-  providerLabel: string;
-  results: WebSearchResult[];
-}
-
 const WEB_SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
 const WEB_SEARCH_PROVIDER_FAILURE_THRESHOLD = 2;
 const WEB_SEARCH_PROVIDER_COOLDOWN_MS = 10 * 60 * 1000;
 const WEB_SEARCH_MAX_RESULTS = 12;
-const WEB_SEARCH_GOOD_ENOUGH_RESULTS = 8;
+const WEB_SEARCH_MAX_QUERIES = 3;
+const WEB_SEARCH_MAX_QUERIES_HARD_LIMIT = 6;
 const WEB_SEARCH_PROVIDER_TIMEOUT_MS = 6000;
 const WEB_SEARCH_IMPORT_HOST = "sidet.invalid";
 const WEB_SEARCH_IMPORT_PATH = "/web-search-import";
@@ -197,49 +199,6 @@ function getPreferredLanguage(language?: string): string {
 
 function createSearchDocument(html: string): Document {
   return new DOMParser().parseFromString(html, "text/html");
-}
-
-function mergeProviderBatches(
-  batches: SearchProviderBatch[],
-  maxResults = WEB_SEARCH_MAX_RESULTS
-): SearchResultPayload {
-  const mergedResults: WebSearchResult[] = [];
-  const seenUrls = new Set<string>();
-  const usedProviders: string[] = [];
-
-  for (let index = 0; mergedResults.length < maxResults; index += 1) {
-    let addedInThisRound = false;
-    for (const batch of batches) {
-      const result = batch.results[index];
-      if (!result) {
-        continue;
-      }
-
-      const normalizedUrl = normalizeHttpUrl(result.url) ?? result.url;
-      if (seenUrls.has(normalizedUrl)) {
-        continue;
-      }
-
-      seenUrls.add(normalizedUrl);
-      mergedResults.push({ ...result });
-      if (!usedProviders.includes(batch.providerLabel)) {
-        usedProviders.push(batch.providerLabel);
-      }
-      addedInThisRound = true;
-      if (mergedResults.length >= maxResults) {
-        break;
-      }
-    }
-
-    if (!addedInThisRound) {
-      break;
-    }
-  }
-
-  return {
-    providerLabel: usedProviders.join(" + ") || batches[0]?.providerLabel || "Sidet",
-    results: mergedResults
-  };
 }
 
 function takeSnippetText(container: Element, title: string, selectors: string[]): string {
@@ -729,11 +688,11 @@ export class WebSearchService {
     const providers = (this.options.getProviders ?? getSearchProviders)(language, normalizedQuery);
     const request = this.options.requestUrl ?? requestUrl;
     const errors: string[] = [];
-    const batches: SearchProviderBatch[] = [];
+    const batches: SearchResultBatch<WebSearchResult>[] = [];
+    const providerLabels: string[] = [];
+    const requestableProviders: SearchProvider[] = [];
 
-    for (let index = 0; index < providers.length; index += 1) {
-      const provider = providers[index];
-      const isLastProvider = index === providers.length - 1;
+    for (const provider of providers) {
       const health = this.providerHealth.get(provider.id);
       if (health && health.cooldownUntil > now) {
         const remainingMinutes = Math.max(1, Math.ceil((health.cooldownUntil - now) / 60000));
@@ -743,12 +702,17 @@ export class WebSearchService {
         });
         continue;
       }
+      requestableProviders.push(provider);
+    }
 
+    if (requestableProviders.length > 0) {
       options.onProgress?.({
         level: "info",
-        message: `正在请求 ${provider.label}…`
+        message: `正在并行请求 ${requestableProviders.map((provider) => provider.label).join(" / ")}…`
       });
+    }
 
+    const outcomes = await Promise.all(requestableProviders.map(async (provider) => {
       try {
         const providerResults = filterResultsForQuery(
           normalizedQuery,
@@ -761,40 +725,18 @@ export class WebSearchService {
             `${provider.label} 搜索`
           )).slice(0, WEB_SEARCH_MAX_RESULTS)
         );
-        this.providerHealth.delete(provider.id);
-
-        if (providerResults.length > 0) {
-          const beforeCount = mergeProviderBatches(batches).results.length;
-          batches.push({
-            providerLabel: provider.label,
-            results: providerResults
-          });
-          const mergedSnapshot = mergeProviderBatches(batches);
-          const addedCount = mergedSnapshot.results.length - beforeCount;
-          options.onProgress?.({
-            level: "info",
-            message: addedCount > 0
-              ? `${provider.label} 返回 ${providerResults.length} 条结果，累计保留 ${mergedSnapshot.results.length} 条。`
-              : `${provider.label} 返回 ${providerResults.length} 条结果，但没有新增可用链接。`
-          });
-          if (mergedSnapshot.results.length >= WEB_SEARCH_GOOD_ENOUGH_RESULTS) {
-            options.onProgress?.({
-              level: "info",
-              message: `当前结果已达到 ${mergedSnapshot.results.length} 条，先停止继续扩展搜索源。`
-            });
-            break;
-          }
-          continue;
-        }
-
-        options.onProgress?.({
-          level: isLastProvider ? "warning" : "info",
-          message: isLastProvider
-            ? `${provider.label} 没有返回可用结果。`
-            : `${provider.label} 没有返回可用结果，继续尝试下一个搜索源。`
-        });
+        return { provider, results: providerResults };
       } catch (error) {
-        const message = toErrorMessage(error);
+        return { provider, error };
+      }
+    }));
+
+    for (const outcome of outcomes) {
+      const { provider } = outcome;
+      const health = this.providerHealth.get(provider.id);
+
+      if ("error" in outcome) {
+        const message = toErrorMessage(outcome.error);
         errors.push(`${provider.label}：${message}`);
         const nextFailureCount = (health?.consecutiveFailures ?? 0) + 1;
         if (nextFailureCount >= WEB_SEARCH_PROVIDER_FAILURE_THRESHOLD) {
@@ -812,24 +754,49 @@ export class WebSearchService {
           ? `；连续失败 ${nextFailureCount} 次，后续 ${Math.ceil(WEB_SEARCH_PROVIDER_COOLDOWN_MS / 60000)} 分钟内将暂时跳过`
           : "";
         options.onProgress?.({
-          level: isLastProvider ? "warning" : "info",
-          message: isLastProvider
-            ? `${provider.label} 失败：${message}${cooldownSuffix}`
-            : `${provider.label} 失败：${message}${cooldownSuffix}；继续尝试下一个搜索源。`
+          level: "warning",
+          message: `${provider.label} 失败：${message}${cooldownSuffix}`
+        });
+        continue;
+      }
+
+      this.providerHealth.delete(provider.id);
+      if (outcome.results.length > 0) {
+        batches.push({
+          query: normalizedQuery,
+          results: outcome.results
+        });
+        providerLabels.push(provider.label);
+        options.onProgress?.({
+          level: "info",
+          message: `${provider.label} 返回 ${outcome.results.length} 条结果。`
+        });
+      } else {
+        options.onProgress?.({
+          level: "info",
+          message: `${provider.label} 没有返回可用结果。`
         });
       }
     }
 
     if (batches.length > 0) {
-      const mergedPayload = mergeProviderBatches(batches);
+      const results = mergeRankedSearchBatches(batches, {
+        now: new Date(now),
+        maxResults: WEB_SEARCH_MAX_RESULTS
+      });
+      const providerLabel = Array.from(new Set(providerLabels)).join(" + ") || "Sidet";
+      options.onProgress?.({
+        level: "info",
+        message: `合并排序后保留 ${results.length} 条结果。`
+      });
       this.searchCache.set(normalizedQuery, {
         expiresAt: now + WEB_SEARCH_CACHE_TTL_MS,
-        providerLabel: mergedPayload.providerLabel,
-        results: mergedPayload.results
+        providerLabel,
+        results
       });
       return {
-        providerLabel: mergedPayload.providerLabel,
-        results: mergedPayload.results.map((result) => ({ ...result }))
+        providerLabel,
+        results: results.map((result) => ({ ...result }))
       };
     }
 
@@ -839,6 +806,114 @@ export class WebSearchService {
 
     return {
       providerLabel: providers[0]?.label ?? "Sidet",
+      results: []
+    };
+  }
+
+  /**
+   * 多组搜索词并行执行，按查询级排名分合并。
+   *
+   * 单组查询直接复用 `search()` 的进度；多组查询只上报聚合进度，避免每个
+   * provider 的日志各刷一遍。部分查询失败时保留其它查询的结果，只有全部查询
+   * 都抛错才整体失败。
+   */
+  async searchMany(queries: string[], options: SearchOptions = {}): Promise<SearchResultPayload> {
+    const maxQueries = Math.max(
+      1,
+      Math.min(
+        Number.isFinite(options.maxQueries) ? Math.trunc(options.maxQueries as number) : WEB_SEARCH_MAX_QUERIES,
+        WEB_SEARCH_MAX_QUERIES_HARD_LIMIT
+      )
+    );
+    const normalizedQueries: string[] = [];
+    for (const query of queries) {
+      const normalized = normalizeQuery(query);
+      if (!normalized || normalizedQueries.includes(normalized)) {
+        continue;
+      }
+      normalizedQueries.push(normalized);
+      if (normalizedQueries.length >= maxQueries) {
+        break;
+      }
+    }
+
+    if (normalizedQueries.length === 0) {
+      return {
+        providerLabel: "Sidet",
+        results: []
+      };
+    }
+
+    if (normalizedQueries.length === 1) {
+      return this.search(normalizedQueries[0] ?? "", options);
+    }
+
+    options.onProgress?.({
+      level: "info",
+      message: `并行执行 ${normalizedQueries.length} 组搜索词…`
+    });
+
+    const settled = await Promise.allSettled(
+      normalizedQueries.map((query) => this.search(query, {}))
+    );
+
+    const batches: SearchResultBatch<WebSearchResult>[] = [];
+    const providerLabels = new Set<string>();
+    const errors: string[] = [];
+
+    settled.forEach((outcome, index) => {
+      const query = normalizedQueries[index] ?? "";
+      if (outcome.status === "rejected") {
+        const message = toErrorMessage(outcome.reason);
+        errors.push(`关键词 ${index + 1}（${query}）：${message}`);
+        options.onProgress?.({
+          level: "warning",
+          message: `关键词 ${index + 1} 失败：${message}`
+        });
+        return;
+      }
+
+      const payload = outcome.value;
+      batches.push({
+        query,
+        results: payload.results
+      });
+      for (const label of payload.providerLabel.split(" + ")) {
+        const trimmed = label.trim();
+        if (trimmed && trimmed !== "Sidet") {
+          providerLabels.add(trimmed);
+        }
+      }
+      options.onProgress?.({
+        level: "info",
+        message: `关键词 ${index + 1} 命中 ${payload.results.length} 条结果。`
+      });
+    });
+
+    if (batches.length > 0) {
+      const results = mergeRankedSearchBatches(batches, {
+        now: new Date((this.options.now ?? Date.now)()),
+        maxResults: WEB_SEARCH_MAX_RESULTS
+      });
+      const providerLabel = Array.from(providerLabels).join(" + ") || "Sidet";
+      options.onProgress?.({
+        level: "info",
+        message: results.length > 0
+          ? `多组搜索词合并去重后保留 ${results.length} 条结果。`
+          : "多组搜索词都没有返回可用结果。"
+      });
+      return {
+        providerLabel,
+        results: results.map((result) => ({ ...result }))
+      };
+    }
+
+    if (errors.length > 0) {
+      throw new Error(errors.join("；"));
+    }
+
+    return {
+      providerLabel: "Sidet",
       results: []
     };
   }

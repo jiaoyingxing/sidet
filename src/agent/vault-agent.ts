@@ -17,7 +17,7 @@ import {
 } from "./knowledge/vault-agent-knowledge-base-search";
 import { VaultAgentWikiMaintenancePromptBuilder } from "./wiki/vault-agent-wiki-maintenance";
 import type { ConversationRecord, MarkdownMessageAttachment, MessageAttachment } from "../types";
-import type { WikiKnowledgeBaseInfo } from "./wiki/wiki-memory-index";
+import type { WikiKnowledgeBaseInfo, WikiKnowledgeMatch } from "./wiki/wiki-memory-index";
 import type { SelectedKnowledgeBaseState } from "../workspace/workspace-controller";
 
 function normalizeText(text: string): string {
@@ -96,6 +96,10 @@ export class VaultAgentService {
 
   findKnowledgeBases(): WikiKnowledgeBaseInfo[] {
     return this.wikiKnowledgeIndex.findKnowledgeBases();
+  }
+
+  async searchWikiMemory(query: string): Promise<WikiKnowledgeMatch[]> {
+    return this.wikiKnowledgeIndex.findRelevantEntries(query, [], null);
   }
 
   findKnowledgeBaseByIndexPath(indexPath: string): WikiKnowledgeBaseInfo | null {

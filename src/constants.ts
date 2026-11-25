@@ -76,21 +76,24 @@ export const MODEL_PRESETS: ModelPreset[] = [
     label: "DeepSeek-V3（硅基流动）",
     providerId: "siliconflow",
     model: "deepseek-ai/DeepSeek-V3",
-    baseUrl: "https://api.siliconflow.cn/v1"
+    baseUrl: "https://api.siliconflow.cn/v1",
+    contextWindowTokens: 64000
   },
   {
     id: "siliconflow-deepseek-r1",
     label: "DeepSeek-R1（硅基流动）",
     providerId: "siliconflow",
     model: "deepseek-ai/DeepSeek-R1",
-    baseUrl: "https://api.siliconflow.cn/v1"
+    baseUrl: "https://api.siliconflow.cn/v1",
+    contextWindowTokens: 64000
   },
   {
     id: "mimo-v25-pro",
     label: "MiMo-V2.5-Pro（小米 MiMo）",
     providerId: "mimo",
     model: "mimo-v2.5-pro",
-    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1"
+    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+    contextWindowTokens: 64000
   },
   {
     id: "mimo-v25",
@@ -98,28 +101,32 @@ export const MODEL_PRESETS: ModelPreset[] = [
     providerId: "mimo",
     model: "mimo-v2.5",
     baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
-    supportsImageInput: true
+    supportsImageInput: true,
+    contextWindowTokens: 64000
   },
   {
     id: "openai-gpt-4o",
     label: "GPT-4o（OpenAI）",
     providerId: "openai",
     model: "gpt-4o",
-    baseUrl: "https://api.openai.com/v1"
+    baseUrl: "https://api.openai.com/v1",
+    contextWindowTokens: 128000
   },
   {
     id: "deepseek-chat",
     label: "DeepSeek Chat（DeepSeek）",
     providerId: "deepseek",
     model: "deepseek-chat",
-    baseUrl: "https://api.deepseek.com/v1"
+    baseUrl: "https://api.deepseek.com/v1",
+    contextWindowTokens: 64000
   },
   {
     id: "openrouter-auto",
     label: "Auto（OpenRouter）",
     providerId: "openrouter",
     model: "openrouter/auto",
-    baseUrl: "https://openrouter.ai/api/v1"
+    baseUrl: "https://openrouter.ai/api/v1",
+    contextWindowTokens: 32000
   }
 ];
 
@@ -157,6 +164,21 @@ export const MAX_AGENT_WIKI_MEMORY_RESULTS = 3;
 export const MAX_AGENT_WIKI_MEMORY_EXCERPT_CHARS = 900;
 export const MAX_AGENT_WIKI_OUTLINE_ITEMS = 6;
 export const MAX_AGENT_WIKI_RELATED_LINKS = 8;
+
+// 首版护栏：只读工具的第一版上界，按真实命中率与上下文占用调整，不是永久参数。
+export const MAX_AGENT_TOOL_RESULT_CHARS = 4000;
+export const MAX_AGENT_TOOL_SEARCH_FILES = 400;
+export const MAX_AGENT_TOOL_SEARCH_RESULTS = 5;
+export const MAX_AGENT_TOOL_LINK_RESULTS = 20;
+export const MAX_AGENT_TOOL_ROUNDS = 4;
+
+// 请求历史装填预算：按模型预设的上下文窗口折算字符，预留回答与图片成本。
+// 0.9 是中文偏保守的 chars/token 估算，不是精确 tokenizer；工具循环追加结果
+// 仍由 MAX_AGENT_TOOL_* 单独约束。
+export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 32000;
+export const PROVIDER_CONTEXT_CHARS_PER_TOKEN = 0.9;
+export const PROVIDER_RESPONSE_RESERVE_TOKENS = 6000;
+export const PROVIDER_IMAGE_CONTEXT_COST_CHARS = 4000;
 
 export const DEFAULT_HOME_PINNED_COMMANDS: HomePinnedCommandSetting[] = [
   {

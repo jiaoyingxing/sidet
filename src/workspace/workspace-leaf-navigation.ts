@@ -104,7 +104,11 @@ export class WorkspaceLeafNavigation {
 
   async openConversationInLeaf(
     conversationId: string,
-    options: { focusComposer?: boolean; forceActiveOnMobile?: boolean } = {}
+    options: {
+      focusComposer?: boolean;
+      forceActiveOnMobile?: boolean;
+      messageId?: string;
+    } = {}
   ): Promise<WorkspaceLeaf | null> {
     if (!this.store.hasConversation(conversationId)) {
       return null;
@@ -130,6 +134,12 @@ export class WorkspaceLeafNavigation {
         focusComposer: options.focusComposer ?? false,
         forceFocus: options.forceActiveOnMobile && Platform.isMobile
       });
+      if (options.messageId) {
+        this.runtime.queueMessageReveal(createdLeaf, {
+          conversationId,
+          messageId: options.messageId
+        });
+      }
       return createdLeaf;
     }
 
@@ -157,6 +167,12 @@ export class WorkspaceLeafNavigation {
       focusComposer: options.focusComposer ?? false,
       forceFocus: options.forceActiveOnMobile && Platform.isMobile
     });
+    if (options.messageId) {
+      this.runtime.queueMessageReveal(targetLeaf, {
+        conversationId,
+        messageId: options.messageId
+      });
+    }
     return targetLeaf;
   }
 

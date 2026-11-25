@@ -150,6 +150,21 @@ function assertRepairConversationRecord(recordsModule, constantsModule) {
         ]
       }),
       createMessage({
+        id: "assistant-streaming-with-history",
+        role: "assistant",
+        status: "streaming",
+        text: "",
+        answerVariants: [
+          {
+            id: "assistant-old",
+            text: "旧回答",
+            status: "done",
+            createdAt: 1
+          }
+        ],
+        activeAnswerVariantIndex: 1
+      }),
+      createMessage({
         id: "user-1",
         role: "user",
         text: "hello"
@@ -163,9 +178,19 @@ function assertRepairConversationRecord(recordsModule, constantsModule) {
   assert.equal(conversation.isPinned, false, "non-boolean isPinned should normalize to false");
   assert.equal(conversation.folderId, null, "invalid folder references should be dropped");
   assert.equal(conversation.draft, undefined, "non-string drafts should be removed");
-  assert.equal(conversation.messages.length, 2, "empty streaming messages should be dropped");
+  assert.equal(conversation.messages.length, 3, "empty streaming messages should be dropped");
   assert.equal(conversation.messages[0].status, "error", "partial streaming messages should downgrade to error");
   assert.equal(conversation.messages[0].metaPanels?.[0]?.label, "联网过程", "valid meta panels should survive repair");
+  assert.equal(
+    conversation.messages[1].status,
+    "error",
+    "an interrupted streaming message carrying answer variants must survive repair"
+  );
+  assert.equal(
+    conversation.messages[1].answerVariants?.[0]?.text,
+    "旧回答",
+    "the previous answer must not be lost when the replacement message has no body yet"
+  );
 }
 
 async function assertAppendUserMessageBehavior(messageRuntimeModule, recordsModule, constantsModule) {
@@ -371,6 +396,394 @@ async function assertWebProcessPanelDedupesBehavior(messageRuntimeModule) {
   );
 }
 
+async function assertAssistantSourcesAndErrorTextBehavior(messageRuntimeModule) {
+  const conversation = createConversation();
+  const harness = createRuntimeHarness(messageRuntimeModule.ConversationStoreMessageRuntime, conversation);
+
+  const partialMessage = await harness.runtime.beginAssistantMessage(conversation.id);
+  harness.runtime.appendAssistantChunk(conversation.id, partialMessage.id, "回答到一半");
+  await harness.runtime.failAssistantMessage(conversation.id, partialMessage.id, "网络连接中断");
+
+  assert.equal(partialMessage.status, "error");
+  assert.equal(partialMessage.text, "回答到一半", "partial assistant text should be preserved");
+  assert.equal(partialMessage.errorText, "网络连接中断", "error reason should be stored separately");
+
+  const sourcedMessage = await harness.runtime.beginAssistantMessage(conversation.id);
+  harness.runtime.setAssistantSources(conversation.id, sourcedMessage.id, [
+    {
+      title: "DeepSeek V4 发布",
+      url: "https://example.com/v4",
+      host: "example.com",
+      note: "1M context",
+      readDepth: "full"
+    },
+    {
+      title: "检索结果",
+      url: "https://example.com/search",
+      host: "example.com",
+      readDepth: "summary"
+    }
+  ]);
+  assert.equal(sourcedMessage.sources?.length, 2);
+  assert.equal(sourcedMessage.sources?.[0]?.readDepth, "full");
+  assert.equal(sourcedMessage.sources?.[1]?.readDepth, "summary");
+
+  await harness.runtime.finishAssistantMessage(conversation.id, sourcedMessage.id);
+  assert.equal(sourcedMessage.errorText, undefined);
+}
+
+async function assertRegenerateKeepsPreviousAnswerAsVariant(messageRuntimeModule) {
+  const { ConversationStoreMessageRuntime } = messageRuntimeModule;
+  const conversation = createConversation({
+    messages: [
+      createMessage({ id: "user-1", role: "user", text: "问题" }),
+      createMessage({ id: "assistant-1", role: "assistant", text: "第一版回答" })
+    ]
+  });
+  const harness = createRuntimeHarness(ConversationStoreMessageRuntime, conversation);
+
+  const replacementUser = await harness.runtime.appendUserMessage(conversation.id, "问题");
+  const newAssistant = await harness.runtime.beginAssistantMessage(conversation.id, {
+    variantOfMessageId: "assistant-1"
+  });
+
+  assert.deepEqual(
+    newAssistant.answerVariants?.map((variant) => variant.text),
+    ["第一版回答"],
+    "regeneration should keep the previous answer as the first variant"
+  );
+  assert.equal(newAssistant.activeAnswerVariantIndex, 1, "the new answer should be the active variant");
+
+  harness.runtime.appendAssistantChunk(conversation.id, newAssistant.id, "第二版回答");
+  await harness.runtime.finishAssistantMessage(conversation.id, newAssistant.id);
+  await harness.runtime.deleteMessagesBetween(conversation.id, "user-1", replacementUser.id);
+
+  assert.deepEqual(
+    conversation.messages.map((message) => message.id),
+    [replacementUser.id, newAssistant.id],
+    "the replacement commit should remove the old user turn"
+  );
+  assert.equal(newAssistant.text, "第二版回答", "the new answer remains the active payload");
+  assert.equal(newAssistant.answerVariants?.[0]?.text, "第一版回答", "the previous answer survives on the new message");
+
+  const providerMessages = harness.runtime.buildProviderMessages(conversation.id);
+  assert.equal(providerMessages.at(-1)?.text, "第二版回答", "provider context should use the active answer");
+  assert.equal(
+    JSON.stringify(providerMessages).includes("第一版回答"),
+    false,
+    "inactive answer variants must not leak into provider context"
+  );
+}
+
+async function assertSelectAnswerVariantSwitchesActivePayload(messageRuntimeModule) {
+  const { ConversationStoreMessageRuntime } = messageRuntimeModule;
+  const conversation = createConversation({
+    messages: [
+      createMessage({ id: "user-1", role: "user", text: "问题" }),
+      createMessage({
+        id: "assistant-2",
+        role: "assistant",
+        text: "第二版回答",
+        sources: [
+          { title: "来源二", url: "https://example.com/2", readDepth: "summary" }
+        ],
+        answerVariants: [
+          {
+            id: "assistant-1",
+            text: "第一版回答",
+            status: "done",
+            createdAt: 1,
+            sources: [
+              { title: "来源一", url: "https://example.com/1", readDepth: "full" }
+            ]
+          }
+        ],
+        activeAnswerVariantIndex: 1
+      })
+    ]
+  });
+  const harness = createRuntimeHarness(ConversationStoreMessageRuntime, conversation);
+  const message = conversation.messages[1];
+
+  await harness.runtime.selectAnswerVariant(conversation.id, message.id, 0);
+  assert.equal(message.text, "第一版回答", "selecting the first variant should materialize it");
+  assert.equal(message.sources?.[0]?.title, "来源一", "variant sources should follow the active version");
+  assert.equal(message.answerVariants?.length, 1, "the previous active version should be stored back");
+  assert.equal(message.answerVariants?.[0]?.text, "第二版回答");
+  assert.equal(message.activeAnswerVariantIndex, 0);
+
+  await harness.runtime.selectAnswerVariant(conversation.id, message.id, 1);
+  assert.equal(message.text, "第二版回答", "switching back should restore the newer answer");
+  assert.equal(message.sources?.[0]?.title, "来源二");
+  assert.equal(message.activeAnswerVariantIndex, 1);
+  assert.equal(harness.storeChangeCount, 2, "each switch should emit one store change");
+}
+
+async function assertErrorAnswerVariantsAreNotInheritedUnlessHistoryExists(messageRuntimeModule) {
+  const { ConversationStoreMessageRuntime } = messageRuntimeModule;
+  const plainError = createConversation({
+    messages: [
+      createMessage({ id: "user-1", role: "user", text: "问题" }),
+      createMessage({
+        id: "assistant-error",
+        role: "assistant",
+        text: "错误说明",
+        status: "error",
+        errorText: "网络连接中断"
+      })
+    ]
+  });
+  const plainHarness = createRuntimeHarness(ConversationStoreMessageRuntime, plainError);
+  const plainRetry = await plainHarness.runtime.beginAssistantMessage(plainError.id, {
+    variantOfMessageId: "assistant-error"
+  });
+  assert.equal(plainRetry.answerVariants, undefined, "a plain failure should be replaced, not versioned");
+  assert.equal(plainRetry.activeAnswerVariantIndex, undefined);
+
+  const errorWithHistory = createConversation({
+    id: "conversation-2",
+    messages: [
+      createMessage({ id: "user-1", role: "user", text: "问题" }),
+      createMessage({
+        id: "assistant-error-history",
+        role: "assistant",
+        text: "错误说明",
+        status: "error",
+        errorText: "网络连接中断",
+        answerVariants: [
+          { id: "assistant-old", text: "旧回答", status: "done", createdAt: 1 }
+        ],
+        activeAnswerVariantIndex: 1
+      })
+    ]
+  });
+  const historyHarness = createRuntimeHarness(ConversationStoreMessageRuntime, errorWithHistory);
+  const historyRetry = await historyHarness.runtime.beginAssistantMessage(errorWithHistory.id, {
+    variantOfMessageId: "assistant-error-history"
+  });
+  assert.deepEqual(
+    historyRetry.answerVariants?.map((variant) => variant.text),
+    ["旧回答", "错误说明"],
+    "retrying an error that is already part of a version history should keep the whole history"
+  );
+  assert.equal(historyRetry.activeAnswerVariantIndex, 2);
+}
+
+function assertRepairAnswerVariants(recordsModule, constantsModule) {
+  const { repairConversationRecord } = recordsModule;
+  const validVariant = {
+    id: "assistant-1",
+    text: "第一版回答",
+    status: "done",
+    createdAt: 1,
+    sources: [
+      { title: "来源一", url: "https://example.com/1", readDepth: "full" }
+    ]
+  };
+  const source = {
+    ...createConversation(),
+    messages: [
+      createMessage({
+        id: "assistant-2",
+        role: "assistant",
+        text: "第二版回答",
+        answerVariants: [
+          validVariant,
+          {
+            id: "assistant-streaming",
+            text: "不完整",
+            status: "streaming",
+            createdAt: 2
+          },
+          {
+            text: "缺少 id",
+            status: "done",
+            createdAt: 3
+          }
+        ],
+        activeAnswerVariantIndex: 99
+      })
+    ]
+  };
+
+  const { conversation, repaired } = repairConversationRecord(source, new Set());
+  assert.equal(repaired, true, "invalid answer variants should report a repair");
+  assert.equal(conversation.messages[0].answerVariants?.length, 1, "invalid and streaming variants should be dropped");
+  assert.equal(conversation.messages[0].answerVariants?.[0]?.text, "第一版回答");
+  assert.equal(conversation.messages[0].activeAnswerVariantIndex, 1, "out-of-range active indexes should fall back to the newest version");
+
+  const idempotentSource = {
+    ...createConversation(),
+    isArchived: false,
+    archivedAt: null,
+    modelConfigId: null,
+    messages: [
+      createMessage({
+        id: "assistant-2",
+        role: "assistant",
+        text: "第二版回答",
+        answerVariants: [validVariant],
+        activeAnswerVariantIndex: 0
+      })
+    ]
+  };
+  const idempotent = repairConversationRecord(idempotentSource, new Set());
+  assert.equal(idempotent.repaired, false, "valid answer variants should not be rewritten on load");
+  assert.equal(
+    idempotent.conversation.messages[0].answerVariants,
+    idempotentSource.messages[0].answerVariants,
+    "valid variant arrays should keep their identity for idempotent repair"
+  );
+}
+
+function assertCloneDeepCopiesAnswerVariants(recordsModule) {
+  const { cloneConversation } = recordsModule;
+  const conversation = createConversation({
+    messages: [
+      createMessage({
+        id: "assistant-2",
+        role: "assistant",
+        text: "第二版回答",
+        answerVariants: [
+          {
+            id: "assistant-1",
+            text: "第一版回答",
+            status: "done",
+            createdAt: 1,
+            sources: [
+              { title: "原始来源", url: "https://example.com/1", readDepth: "full" }
+            ]
+          }
+        ],
+        activeAnswerVariantIndex: 1
+      })
+    ]
+  });
+
+  const clone = cloneConversation(conversation);
+  assert.notEqual(clone.messages[0].answerVariants, conversation.messages[0].answerVariants);
+  assert.notEqual(
+    clone.messages[0].answerVariants?.[0]?.sources,
+    conversation.messages[0].answerVariants?.[0]?.sources
+  );
+  clone.messages[0].answerVariants[0].sources[0].title = "克隆后修改";
+  assert.equal(
+    conversation.messages[0].answerVariants?.[0]?.sources?.[0]?.title,
+    "原始来源",
+    "cloning should deep-copy variant sources"
+  );
+}
+
+function createSummaryMessage(id, role, text) {
+  return createMessage({ id, role, text });
+}
+
+function assertContextSummaryRepairAndClone(recordsModule, constantsModule) {
+  const { repairConversationRecord, cloneConversation } = recordsModule;
+  const messages = [
+    createSummaryMessage("user-1", "user", "问题"),
+    createSummaryMessage("assistant-1", "assistant", "回答")
+  ];
+  const summary = {
+    text: "背景摘要",
+    summarizedThroughMessageId: "assistant-1",
+    updatedAt: 1
+  };
+  const validConversation = {
+    ...createConversation(),
+    isArchived: false,
+    archivedAt: null,
+    modelConfigId: null,
+    messages,
+    contextSummary: summary
+  };
+
+  const valid = repairConversationRecord(validConversation, new Set());
+  assert.equal(valid.repaired, false, "valid context summaries should not be rewritten");
+  assert.equal(valid.conversation.contextSummary, summary, "valid context summaries should keep their identity");
+
+  const missingAnchor = repairConversationRecord({
+    ...validConversation,
+    contextSummary: {
+      ...summary,
+      summarizedThroughMessageId: "missing-message"
+    }
+  }, new Set());
+  assert.equal(missingAnchor.repaired, true);
+  assert.equal(
+    missingAnchor.conversation.contextSummary,
+    undefined,
+    "summaries with a missing anchor should be dropped"
+  );
+
+  const clone = cloneConversation(validConversation);
+  assert.notEqual(clone.contextSummary, validConversation.contextSummary);
+  clone.contextSummary.text = "克隆后修改";
+  assert.equal(validConversation.contextSummary.text, "背景摘要", "cloning should copy the summary");
+}
+
+async function assertContextSummarySetAndPrune(messageRuntimeModule) {
+  const { ConversationStoreMessageRuntime } = messageRuntimeModule;
+  const conversation = createConversation({
+    messages: [
+      createSummaryMessage("user-1", "user", "问题"),
+      createSummaryMessage("assistant-1", "assistant", "回答"),
+      createSummaryMessage("user-2", "user", "继续")
+    ],
+    contextSummary: {
+      text: "背景摘要",
+      summarizedThroughMessageId: "assistant-1",
+      updatedAt: 1
+    }
+  });
+  const harness = createRuntimeHarness(ConversationStoreMessageRuntime, conversation);
+
+  await harness.runtime.setContextSummary(conversation.id, {
+    text: "新摘要",
+    summarizedThroughMessageId: "user-1",
+    updatedAt: 2
+  });
+  assert.equal(conversation.contextSummary?.text, "新摘要");
+  assert.equal(harness.saveCount, 1, "setting a summary should persist immediately");
+  assert.equal(harness.storeChangeCount, 0, "summary changes should not trigger a visible store change");
+
+  await harness.runtime.removeMessage(conversation.id, "user-1");
+  assert.equal(
+    conversation.contextSummary,
+    undefined,
+    "removing the summary anchor should drop the summary"
+  );
+}
+
+async function assertArchivedAnswerVariantSwitchIsRejected(messageRuntimeModule) {
+  const { ConversationStoreMessageRuntime } = messageRuntimeModule;
+  const conversation = createConversation({
+    isArchived: true,
+    messages: [
+      createMessage({ id: "user-1", role: "user", text: "问题" }),
+      createMessage({
+        id: "assistant-2",
+        role: "assistant",
+        text: "第二版回答",
+        status: "done",
+        answerVariants: [
+          { id: "assistant-1", text: "第一版回答", status: "done", createdAt: 1 }
+        ],
+        activeAnswerVariantIndex: 1
+      })
+    ]
+  });
+  const harness = createRuntimeHarness(ConversationStoreMessageRuntime, conversation);
+
+  await assert.rejects(
+    () => harness.runtime.selectAnswerVariant(conversation.id, "assistant-2", 0),
+    /已归档/,
+    "archived conversations must stay read-only for version switching"
+  );
+  assert.equal(conversation.messages[1].text, "第二版回答", "rejected switches must not mutate archived messages");
+  assert.equal(harness.storeChangeCount, 0, "rejected archived switches must not emit a store change");
+}
+
 async function main() {
   try {
     const [messageRuntimeModule, recordsModule, constantsModule] = await Promise.all([
@@ -380,11 +793,20 @@ async function main() {
     ]);
 
     assertRepairConversationRecord(recordsModule, constantsModule);
+    assertRepairAnswerVariants(recordsModule, constantsModule);
+    assertCloneDeepCopiesAnswerVariants(recordsModule);
+    assertContextSummaryRepairAndClone(recordsModule, constantsModule);
+    await assertContextSummarySetAndPrune(messageRuntimeModule);
+    await assertRegenerateKeepsPreviousAnswerAsVariant(messageRuntimeModule);
+    await assertSelectAnswerVariantSwitchesActivePayload(messageRuntimeModule);
+    await assertErrorAnswerVariantsAreNotInheritedUnlessHistoryExists(messageRuntimeModule);
+    await assertArchivedAnswerVariantSwitchIsRejected(messageRuntimeModule);
     await assertAppendUserMessageBehavior(messageRuntimeModule, recordsModule, constantsModule);
     await assertDeleteMessagesBetweenRetitlesConversation(messageRuntimeModule, recordsModule);
     await assertPruneClearsStreamingAndBuildProviderMessages(messageRuntimeModule, recordsModule);
     await assertAssistantReasoningLabelBehavior(messageRuntimeModule);
     await assertWebProcessPanelDedupesBehavior(messageRuntimeModule);
+    await assertAssistantSourcesAndErrorTextBehavior(messageRuntimeModule);
 
     console.log("conversation store logic test passed");
   } finally {

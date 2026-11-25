@@ -1,7 +1,15 @@
 import { UNTITLED_CONVERSATION_TITLE } from "../constants";
 import { makeId } from "../shared/paths";
 import { now } from "../shared/time";
-import type { ConversationRecord, MessageMetaPanel, MessageMetaPanelSource, MessageRecord } from "../types";
+import type {
+  ConversationContextSummary,
+  ConversationRecord,
+  MessageAnswerVariant,
+  MessageMetaPanel,
+  MessageMetaPanelSource,
+  MessageRecord,
+  MessageSource
+} from "../types";
 import { buildConversationTitle } from "./conversation-store-records";
 
 interface ConversationStoreMessageRuntimeOptions {
@@ -18,6 +26,59 @@ interface ConversationStoreMessageRuntimeOptions {
     segment: "content" | "reasoning" | "meta";
     text: string;
   }) => void;
+}
+
+function clampAnswerVariantIndex(index: number | undefined, totalVersions: number): number {
+  if (totalVersions <= 1) {
+    return 0;
+  }
+  if (typeof index === "number" && Number.isInteger(index) && index >= 0 && index < totalVersions) {
+    return index;
+  }
+  return totalVersions - 1;
+}
+
+/** 把「主字段激活版本 + answerVariants」还原成按时间排列的完整版本列表。 */
+function buildAnswerVariantList(message: MessageRecord): MessageAnswerVariant[] {
+  const variants = message.answerVariants ?? [];
+  const activeIndex = clampAnswerVariantIndex(message.activeAnswerVariantIndex, variants.length + 1);
+  const activeVariant: MessageAnswerVariant = {
+    id: message.id,
+    text: message.text,
+    reasoningText: message.reasoningText,
+    reasoningLabel: message.reasoningLabel,
+    metaPanels: message.metaPanels,
+    sources: message.sources,
+    status: message.status === "error" ? "error" : "done",
+    errorText: message.errorText,
+    createdAt: message.createdAt
+  };
+
+  return [
+    ...variants.slice(0, activeIndex),
+    activeVariant,
+    ...variants.slice(activeIndex)
+  ];
+}
+
+function shouldInheritAnswerVariants(message: MessageRecord | undefined): message is MessageRecord {
+  if (!message || message.role !== "assistant" || message.status === "streaming") {
+    return false;
+  }
+  return message.status === "done" || (message.answerVariants?.length ?? 0) > 0;
+}
+
+/** Provider 只应看到当前版本；历史版本留在本地消息上。 */
+function toProviderMessage(message: MessageRecord): MessageRecord {
+  if (!message.answerVariants && message.activeAnswerVariantIndex === undefined) {
+    return message;
+  }
+  const {
+    answerVariants: _answerVariants,
+    activeAnswerVariantIndex: _activeAnswerVariantIndex,
+    ...providerMessage
+  } = message;
+  return providerMessage;
 }
 
 export class ConversationStoreMessageRuntime {
@@ -67,16 +128,24 @@ export class ConversationStoreMessageRuntime {
 
   async beginAssistantMessage(
     conversationId: string,
-    options: { reasoningLabel?: string } = {}
+    options: { reasoningLabel?: string; variantOfMessageId?: string } = {}
   ): Promise<MessageRecord> {
     const conversation = this.options.requireConversation(conversationId);
+    const variantSource = options.variantOfMessageId
+      ? conversation.messages.find((message) => message.id === options.variantOfMessageId)
+      : undefined;
+    const inheritedVariants = shouldInheritAnswerVariants(variantSource)
+      ? buildAnswerVariantList(variantSource)
+      : undefined;
     const message: MessageRecord = {
       id: makeId("message"),
       role: "assistant",
       text: "",
       createdAt: now(),
       status: "streaming",
-      reasoningLabel: options.reasoningLabel?.trim() || undefined
+      reasoningLabel: options.reasoningLabel?.trim() || undefined,
+      answerVariants: inheritedVariants,
+      activeAnswerVariantIndex: inheritedVariants?.length
     };
 
     conversation.messages.push(message);
@@ -191,10 +260,29 @@ export class ConversationStoreMessageRuntime {
     });
   }
 
+  setAssistantSources(
+    conversationId: string,
+    messageId: string,
+    sources: MessageSource[]
+  ): void {
+    const conversation = this.options.requireConversation(conversationId);
+    const message = this.options.requireMessage(conversation, messageId);
+    if (message.role !== "assistant") {
+      return;
+    }
+    message.sources = sources.length > 0
+      ? sources.map((source) => ({ ...source }))
+      : undefined;
+    conversation.updatedAt = now();
+    this.options.scheduleSave(conversationId);
+    this.options.emitStoreChange();
+  }
+
   async finishAssistantMessage(conversationId: string, messageId: string): Promise<void> {
     const conversation = this.options.requireConversation(conversationId);
     const message = this.options.requireMessage(conversation, messageId);
     message.status = "done";
+    message.errorText = undefined;
     conversation.updatedAt = now();
     this.options.setStreamingConversationId(null);
     await this.options.saveImmediately(conversationId);
@@ -205,6 +293,7 @@ export class ConversationStoreMessageRuntime {
     const conversation = this.options.requireConversation(conversationId);
     const message = this.options.requireMessage(conversation, messageId);
     message.status = "error";
+    message.errorText = errorText.trim() || undefined;
     if (!message.text.trim()) {
       message.text = errorText;
     }
@@ -214,9 +303,62 @@ export class ConversationStoreMessageRuntime {
     this.options.emitStoreChange();
   }
 
+  async selectAnswerVariant(
+    conversationId: string,
+    messageId: string,
+    index: number
+  ): Promise<void> {
+    const conversation = this.options.requireConversation(conversationId);
+    if (conversation.isArchived) {
+      throw new Error("已归档对话需先恢复后才能切换回答版本。");
+    }
+    const message = this.options.requireMessage(conversation, messageId);
+    if (message.role !== "assistant" || message.status === "streaming") {
+      throw new Error("当前回答还在生成，暂时不能切换版本。");
+    }
+    const versions = buildAnswerVariantList(message);
+    if (versions.length <= 1) {
+      return;
+    }
+    if (!Number.isInteger(index) || index < 0 || index >= versions.length) {
+      throw new Error("回答版本不存在。");
+    }
+    if (index === clampAnswerVariantIndex(message.activeAnswerVariantIndex, versions.length)) {
+      return;
+    }
+
+    const target = versions[index];
+    const remaining = versions.filter((_version, versionIndex) => versionIndex !== index);
+    message.text = target.text;
+    message.reasoningText = target.reasoningText;
+    message.reasoningLabel = target.reasoningLabel;
+    message.metaPanels = target.metaPanels;
+    message.sources = target.sources;
+    message.status = target.status;
+    message.errorText = target.errorText;
+    if (target.createdAt > 0) {
+      message.createdAt = target.createdAt;
+    }
+    message.answerVariants = remaining.length > 0 ? remaining : undefined;
+    message.activeAnswerVariantIndex = remaining.length > 0 ? index : undefined;
+    conversation.updatedAt = now();
+    await this.options.saveImmediately(conversationId);
+    this.options.emitStoreChange();
+  }
+
+  async setContextSummary(
+    conversationId: string,
+    summary: ConversationContextSummary | null
+  ): Promise<void> {
+    const conversation = this.options.requireConversation(conversationId);
+    conversation.contextSummary = summary ?? undefined;
+    await this.options.saveImmediately(conversationId);
+  }
+
   async removeMessage(conversationId: string, messageId: string): Promise<void> {
     const conversation = this.options.requireConversation(conversationId);
     conversation.messages = conversation.messages.filter((message) => message.id !== messageId);
+    this.pruneContextSummary(conversation);
     conversation.updatedAt = now();
     this.options.setStreamingConversationId(null);
     await this.options.saveImmediately(conversationId);
@@ -254,6 +396,7 @@ export class ConversationStoreMessageRuntime {
       ...conversation.messages.slice(0, fromIndex),
       ...conversation.messages.slice(beforeIndex)
     ];
+    this.pruneContextSummary(conversation);
 
     if (
       fromIndex === 0 &&
@@ -290,6 +433,7 @@ export class ConversationStoreMessageRuntime {
     const previousTitle = conversation.title;
     const previousDerivedTitle = buildConversationTitle(targetMessage.text);
     conversation.messages = nextMessages;
+    this.pruneContextSummary(conversation);
 
     if (this.options.getStreamingConversationId() === conversationId) {
       this.options.setStreamingConversationId(null);
@@ -312,7 +456,9 @@ export class ConversationStoreMessageRuntime {
 
   buildProviderMessages(conversationId: string): MessageRecord[] {
     const conversation = this.options.requireConversation(conversationId);
-    return conversation.messages.filter((message) => message.status !== "streaming");
+    return conversation.messages
+      .filter((message) => message.status !== "streaming")
+      .map(toProviderMessage);
   }
 
   buildReplacementProviderMessages(
@@ -330,7 +476,19 @@ export class ConversationStoreMessageRuntime {
     return [
       ...conversation.messages.slice(0, replaceIndex),
       replacementMessage
-    ].filter((message) => message.status !== "streaming");
+    ]
+      .filter((message) => message.status !== "streaming")
+      .map(toProviderMessage);
+  }
+
+  private pruneContextSummary(conversation: ConversationRecord): void {
+    const summarizedThroughMessageId = conversation.contextSummary?.summarizedThroughMessageId;
+    if (!summarizedThroughMessageId) {
+      return;
+    }
+    if (!conversation.messages.some((message) => message.id === summarizedThroughMessageId)) {
+      conversation.contextSummary = undefined;
+    }
   }
 
   private restoreLeadingAutoTitle(conversation: ConversationRecord): void {

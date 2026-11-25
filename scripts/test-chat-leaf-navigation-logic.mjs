@@ -59,16 +59,20 @@ function createLeaf({ type = "empty", state = {}, active = false, container = {}
   };
 }
 
-function createHarness(modeState = { knowledgeBaseIndexPath: null, webSearchEnabled: false }) {
+function createHarness(
+  modeState = { knowledgeBaseIndexPath: null, webSearchEnabled: false },
+  options = {}
+) {
   const defaultModelConfigId = "model-default";
   const rootSplit = {};
   const createdLeaves = [];
+  const chatLeaves = options.chatLeaves ?? [];
   const app = {
     workspace: {
       activeLeaf: null,
       rootSplit,
-      getLeavesOfType: () => [],
-      getMostRecentLeaf: () => null,
+      getLeavesOfType: (type) => (type === "sidet-chat-view" ? chatLeaves : []),
+      getMostRecentLeaf: () => chatLeaves[0] ?? null,
       getRightLeaf: () => null,
       getLeaf: () => {
         const leaf = createLeaf({ container: rootSplit });
@@ -91,6 +95,7 @@ function createHarness(modeState = { knowledgeBaseIndexPath: null, webSearchEnab
   const runtime = {
     hydratedStates: [],
     updatedStates: [],
+    revealedRequests: [],
     rememberedLeaf: null,
     getLastFocusedChatLeaf: () => null,
     getLastModeState: () => modeState,
@@ -113,6 +118,9 @@ function createHarness(modeState = { knowledgeBaseIndexPath: null, webSearchEnab
     updateChatLeafState: (leaf, state) => {
       leaf.__chatLeafState = state;
       runtime.updatedStates.push(state);
+    },
+    queueMessageReveal: (leaf, request) => {
+      runtime.revealedRequests.push({ leaf, request });
     }
   };
 
@@ -161,12 +169,75 @@ async function assertOpenConversationWithoutTargetLeafPreservesMode(module) {
     () => harness.defaultModelConfigId
   );
 
-  const leaf = await navigation.openConversationInLeaf("conversation-1");
+  const leaf = await navigation.openConversationInLeaf("conversation-1", {
+    messageId: "message-1"
+  });
   assert.ok(leaf, "openConversationInLeaf should create a leaf when the conversation exists");
   assert.equal(leaf.getViewState().state.conversationId, "conversation-1", "newly opened leaf should target the requested conversation");
   assert.equal(leaf.getViewState().state.modelConfigId, harness.defaultModelConfigId, "conversation leaf should carry the conversation model id");
   assert.equal(leaf.getViewState().state.knowledgeBaseIndexPath, "Sidet/Wiki/Index.md", "conversation leaf should inherit the persistent knowledge-base selection");
   assert.equal(leaf.getViewState().state.webSearchEnabled, false, "conversation leaf should preserve the inherited web-search mode");
+  assert.deepEqual(
+    harness.runtime.revealedRequests,
+    [
+      {
+        leaf,
+        request: {
+          conversationId: "conversation-1",
+          messageId: "message-1"
+        }
+      }
+    ],
+    "openConversationInLeaf should queue a one-shot message reveal request"
+  );
+}
+
+async function assertOpenConversationOnExistingLeafQueuesReveal(module) {
+  const existingLeaf = createLeaf({
+    type: "sidet-chat-view",
+    active: true
+  });
+  const harness = createHarness(
+    { knowledgeBaseIndexPath: null, webSearchEnabled: false },
+    { chatLeaves: [existingLeaf] }
+  );
+  existingLeaf.__chatLeafState = {
+    conversationId: "conversation-0",
+    draft: "旧草稿",
+    modelConfigId: harness.defaultModelConfigId,
+    knowledgeBaseIndexPath: null,
+    webSearchEnabled: false
+  };
+  const navigation = new module.WorkspaceLeafNavigation(
+    harness.app,
+    harness.store,
+    harness.runtime,
+    () => harness.defaultModelConfigId
+  );
+
+  const leaf = await navigation.openConversationInLeaf("conversation-1", {
+    messageId: "message-1"
+  });
+
+  assert.equal(leaf, existingLeaf, "an existing chat leaf should be reused");
+  assert.equal(
+    existingLeaf.__chatLeafState?.conversationId,
+    "conversation-1",
+    "the existing leaf should be retargeted to the requested conversation"
+  );
+  assert.deepEqual(
+    harness.runtime.revealedRequests,
+    [
+      {
+        leaf: existingLeaf,
+        request: {
+          conversationId: "conversation-1",
+          messageId: "message-1"
+        }
+      }
+    ],
+    "reusing an existing leaf should still queue the one-shot message reveal"
+  );
 }
 
 async function assertResetFreshConversationKeepsMode(module) {
@@ -460,6 +531,7 @@ async function main() {
     const module = await loadBundledModule("src/workspace/workspace-leaf-navigation.ts");
     await assertOpenNewChatTabPreservesMode(module);
     await assertOpenConversationWithoutTargetLeafPreservesMode(module);
+    await assertOpenConversationOnExistingLeafQueuesReveal(module);
     await assertResetFreshConversationKeepsMode(module);
     await assertBrowserRestoreKeepsOneSidebarLeaf(module);
     assertStartupAndCommandEntrypointsAreRegistered();

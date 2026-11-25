@@ -68,10 +68,28 @@ function buildAttachmentReferenceText(attachments: MessageAttachment[] | undefin
   ].join("\n");
 }
 
+function buildSourceReferenceText(message: MessageRecord): string {
+  if (message.role !== "assistant" || !message.sources?.length) {
+    return "";
+  }
+  const lines = ["**来源**", ""];
+  message.sources.forEach((source, index) => {
+    const title = (source.title || source.url || "来源")
+      .replace(/\[/g, "［")
+      .replace(/\]/g, "］");
+    const link = source.url ? `[${title}](${source.url})` : title;
+    const host = source.host ? ` — ${source.host}` : "";
+    const depth = source.readDepth === "full" ? "（已读全文）" : "（仅摘要）";
+    lines.push(`${index + 1}. ${link}${host}${depth}`);
+  });
+  return lines.join("\n");
+}
+
 function buildMessageText(message: MessageRecord): string {
   return [
     message.text.trim(),
-    buildAttachmentReferenceText(message.attachments)
+    buildAttachmentReferenceText(message.attachments),
+    buildSourceReferenceText(message)
   ].filter((part) => part.length > 0).join("\n\n");
 }
 

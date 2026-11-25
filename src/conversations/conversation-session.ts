@@ -1,18 +1,42 @@
+import {
+  PROVIDER_CONTEXT_CHARS_PER_TOKEN,
+  PROVIDER_IMAGE_CONTEXT_COST_CHARS,
+  PROVIDER_RESPONSE_RESERVE_TOKENS
+} from "../constants";
 import type {
+  ConversationContextSummary,
   MessageAttachment,
   MessageMetaPanel,
   MessageMetaPanelSource,
   MessageRecord,
+  MessageSource,
   ProviderAdapter,
   ReasoningMode,
   ResolvedModelConfig,
   WebSearchMode
 } from "../types";
+import {
+  estimateProviderMessageChars,
+  resolveModelContextWindowTokens,
+  trimProviderMessagesForBudget
+} from "./conversation-context-budget";
+import {
+  buildContextSummaryInput,
+  buildContextSummaryRequestMessages,
+  CONTEXT_SUMMARY_TIMEOUT_MS,
+  findContextSummaryRange,
+  normalizeContextSummaryText,
+  selectProviderMessagesWithContextSummary
+} from "./conversation-context-summary";
 import { ConversationStore, type ConversationSnapshot } from "./conversation-store";
 
 interface SendOptions {
   requestContext?: string | null;
+  /** 本轮上下文已占用的字符数；用于从历史预算中预留。 */
+  requestContextChars?: number;
   replaceFromMessageId?: string | null;
+  /** 重新生成时保留旧回答：旧消息 id 作为新回答的第一个历史版本。 */
+  variantOfMessageId?: string | null;
   knowledgeBaseRouting?: MessageRecord["knowledgeBaseRouting"];
   onReplacementCommit?: (() => void) | null;
 }
@@ -27,12 +51,14 @@ export interface LocalAssistantTaskRuntime {
   appendContent: (chunk: string) => void;
   appendMetaPanelText: (panel: Pick<MessageMetaPanel, "kind" | "label" | "display" | "group" | "groupLabel">, chunk: string) => void;
   setMetaPanelSources: (panel: Pick<MessageMetaPanel, "kind" | "label" | "display" | "group" | "groupLabel">, sources: MessageMetaPanelSource[]) => void;
+  setSources: (sources: MessageSource[]) => void;
   buildRequestMessages: (requestContext?: string | null) => MessageRecord[];
   completeModelReply: (
     messages: MessageRecord[],
     options?: {
       webSearchMode?: WebSearchMode;
       reasoningMode?: ReasoningMode;
+      signal?: AbortSignal;
     }
   ) => Promise<{
     contentText: string;
@@ -46,12 +72,14 @@ export interface LocalAssistantTaskRuntime {
       onReasoningChunk?: (chunk: string, state: { contentText: string; reasoningText: string }) => void;
       onContentChunk?: (chunk: string, state: { contentText: string; reasoningText: string }) => void;
       shouldStop?: (state: { contentText: string; reasoningText: string }) => boolean;
+      signal?: AbortSignal;
     }
   ) => Promise<{
     contentText: string;
     reasoningText: string;
     stoppedEarly: boolean;
   }>;
+  getAbortSignal: () => AbortSignal;
 }
 
 interface StreamAssistantOptions {
@@ -72,8 +100,21 @@ interface ActiveStream {
   isReplacementCommitted: (() => boolean) | null;
 }
 
+interface ActiveLocalTask {
+  conversationId: string;
+  assistantMessageId: string;
+  abortController: AbortController;
+  forceStopped: boolean;
+  stopFallbackTimer: number | null;
+  settled: Promise<void>;
+  resolveSettled: () => void;
+  replaceSnapshot: ConversationSnapshot | null;
+  isReplacementCommitted: (() => boolean) | null;
+}
+
 export class ConversationSession {
   private activeStream: ActiveStream | null = null;
+  private activeLocalTask: ActiveLocalTask | null = null;
 
   constructor(
     private readonly store: ConversationStore,
@@ -82,38 +123,56 @@ export class ConversationSession {
   ) {}
 
   isStreaming(): boolean {
-    return this.activeStream !== null;
+    return this.activeStream !== null || this.activeLocalTask !== null;
   }
 
   getActiveConversationId(): string | null {
-    return this.activeStream?.conversationId ?? null;
+    return this.activeStream?.conversationId ?? this.activeLocalTask?.conversationId ?? null;
   }
 
   stop(): void {
     const stream = this.activeStream;
-    if (!stream) {
+    if (stream) {
+      stream.abortController.abort();
+      if (stream.stopFallbackTimer !== null) {
+        return;
+      }
+
+      stream.stopFallbackTimer = window.setTimeout(() => {
+        stream.stopFallbackTimer = null;
+        void this.forceStopStream(stream);
+      }, 1200);
       return;
     }
 
-    stream.abortController.abort();
-    if (stream.stopFallbackTimer !== null) {
+    const localTask = this.activeLocalTask;
+    if (!localTask) {
       return;
     }
 
-    stream.stopFallbackTimer = window.setTimeout(() => {
-      stream.stopFallbackTimer = null;
-      void this.forceStopStream(stream);
+    localTask.abortController.abort();
+    if (localTask.stopFallbackTimer !== null) {
+      return;
+    }
+
+    localTask.stopFallbackTimer = window.setTimeout(() => {
+      localTask.stopFallbackTimer = null;
+      void this.forceStopLocalTask(localTask);
     }, 1200);
   }
 
   async stopAndWait(): Promise<void> {
     const stream = this.activeStream;
-    if (!stream) {
+    const localTask = this.activeLocalTask;
+    if (!stream && !localTask) {
       return;
     }
 
     this.stop();
-    await stream.settled;
+    await Promise.all([
+      stream?.settled ?? Promise.resolve(),
+      localTask?.settled ?? Promise.resolve()
+    ]);
   }
 
   async send(
@@ -128,7 +187,7 @@ export class ConversationSession {
       return;
     }
 
-    if (this.activeStream) {
+    if (this.hasActiveTask()) {
       throw new Error("当前已有回复正在生成。");
     }
 
@@ -165,9 +224,14 @@ export class ConversationSession {
         replacementCommitted = true;
         options.onReplacementCommit?.();
       };
-      const providerMessages = replaceFromMessageId
-        ? this.store.buildReplacementProviderMessages(conversationId, replaceFromMessageId, userMessage.id)
-        : this.store.buildProviderMessages(conversationId);
+      const providerMessages = this.selectProviderMessagesWithinBudget(
+        replaceFromMessageId
+          ? this.store.buildReplacementProviderMessages(conversationId, replaceFromMessageId, userMessage.id)
+          : this.store.buildProviderMessages(conversationId),
+        options.requestContext?.length ?? 0,
+        modelConfig,
+        this.store.getConversation(conversationId)?.contextSummary
+      );
       const requestMessages = this.withRequestContext(
         providerMessages,
         userMessage.id,
@@ -201,7 +265,7 @@ export class ConversationSession {
       return;
     }
 
-    if (this.activeStream) {
+    if (this.hasActiveTask()) {
       throw new Error("当前已有回复正在生成。");
     }
 
@@ -309,7 +373,7 @@ export class ConversationSession {
       return;
     }
 
-    if (this.activeStream) {
+    if (this.hasActiveTask()) {
       throw new Error("当前已有回复正在生成。");
     }
 
@@ -328,6 +392,7 @@ export class ConversationSession {
       : null;
     let replacementCommitted = false;
     const replacementCommitState: { promise: Promise<void> | null } = { promise: null };
+    let localTask: ActiveLocalTask | null = null;
 
     try {
       const userMessage = await this.store.appendUserMessage(conversationId, messageText, attachments, {
@@ -349,15 +414,43 @@ export class ConversationSession {
         }
         replacementCommitState.promise = commitReplacement();
       };
-      const providerMessages = replaceFromMessageId
-        ? this.store.buildReplacementProviderMessages(conversationId, replaceFromMessageId, userMessage.id)
-        : this.store.buildProviderMessages(conversationId);
+      const providerMessages = this.selectProviderMessagesWithinBudget(
+        replaceFromMessageId
+          ? this.store.buildReplacementProviderMessages(conversationId, replaceFromMessageId, userMessage.id)
+          : this.store.buildProviderMessages(conversationId),
+        options.requestContextChars ?? 0,
+        modelConfig,
+        this.store.getConversation(conversationId)?.contextSummary
+      );
       const assistantMessage = await this.store.beginAssistantMessage(conversationId, {
-        reasoningLabel: options.reasoningLabel
+        reasoningLabel: options.reasoningLabel,
+        variantOfMessageId: options.variantOfMessageId ?? undefined
       });
+
+      const abortController = new AbortController();
+      let resolveSettled: () => void = () => undefined;
+      const settled = new Promise<void>((resolve) => {
+        resolveSettled = resolve;
+      });
+      const activeLocalTask: ActiveLocalTask = {
+        conversationId,
+        assistantMessageId: assistantMessage.id,
+        abortController,
+        forceStopped: false,
+        stopFallbackTimer: null,
+        settled,
+        resolveSettled: () => resolveSettled(),
+        replaceSnapshot,
+        isReplacementCommitted: () => replacementCommitted
+      };
+      localTask = activeLocalTask;
+      this.activeLocalTask = activeLocalTask;
+      const isCurrentLocalTask = (): boolean =>
+        this.activeLocalTask === activeLocalTask && !activeLocalTask.forceStopped;
+
       const runtime: LocalAssistantTaskRuntime = {
         appendReasoning: (chunk) => {
-          if (!chunk) {
+          if (!chunk || !isCurrentLocalTask()) {
             return;
           }
           if (chunk.trim()) {
@@ -366,7 +459,7 @@ export class ConversationSession {
           this.store.appendAssistantReasoningChunk(conversationId, assistantMessage.id, chunk);
         },
         appendContent: (chunk) => {
-          if (!chunk) {
+          if (!chunk || !isCurrentLocalTask()) {
             return;
           }
           if (chunk.trim()) {
@@ -375,7 +468,7 @@ export class ConversationSession {
           this.store.appendAssistantChunk(conversationId, assistantMessage.id, chunk);
         },
         appendMetaPanelText: (panel, chunk) => {
-          if (!chunk) {
+          if (!chunk || !isCurrentLocalTask()) {
             return;
           }
           if (chunk.trim()) {
@@ -384,27 +477,80 @@ export class ConversationSession {
           this.store.appendAssistantMetaPanelChunk(conversationId, assistantMessage.id, panel, chunk);
         },
         setMetaPanelSources: (panel, sources) => {
+          if (!isCurrentLocalTask()) {
+            return;
+          }
           if (sources.length > 0) {
             handleFirstAssistantResponse();
           }
           this.store.replaceAssistantMetaPanelSources(conversationId, assistantMessage.id, panel, sources);
+        },
+        setSources: (sources) => {
+          if (!isCurrentLocalTask()) {
+            return;
+          }
+          if (sources.length > 0) {
+            handleFirstAssistantResponse();
+          }
+          this.store.setAssistantSources(conversationId, assistantMessage.id, sources);
         },
         buildRequestMessages: (requestContext) => this.withRequestContext(
           providerMessages.map((message) => ({ ...message })),
           userMessage.id,
           requestContext
         ),
-        completeModelReply: (messages, modelOptions = {}) => this.collectProviderReply(modelConfig, messages, modelOptions),
-        streamModelReply: (messages, modelOptions = {}) => this.streamCollectedProviderReply(modelConfig, messages, modelOptions)
+        completeModelReply: (messages, modelOptions = {}) => this.collectProviderReply(modelConfig, messages, {
+          signal: abortController.signal,
+          ...modelOptions
+        }),
+        streamModelReply: (messages, modelOptions = {}) => this.streamCollectedProviderReply(modelConfig, messages, {
+          signal: abortController.signal,
+          ...modelOptions
+        }),
+        getAbortSignal: () => abortController.signal
       };
 
       await task(runtime);
+      if (activeLocalTask.forceStopped) {
+        return;
+      }
       if (replacementCommitState.promise) {
         await replacementCommitState.promise;
       }
+      if (abortController.signal.aborted) {
+        await this.settleCancelledLocalTask(
+          conversationId,
+          assistantMessage.id,
+          replaceSnapshot,
+          () => replacementCommitted
+        );
+        return;
+      }
       await this.store.finishAssistantMessage(conversationId, assistantMessage.id);
       await commitReplacement();
+      void this.maybeSummarizeConversationContext(conversationId, modelConfig);
     } catch (error) {
+      const cancelled = localTask !== null
+        && (isAbortError(error) || localTask.forceStopped || localTask.abortController.signal.aborted);
+      if (cancelled) {
+        if (localTask && !localTask.forceStopped) {
+          if (replacementCommitState.promise) {
+            try {
+              await replacementCommitState.promise;
+            } catch {
+              // 替换提交失败时按快照恢复；这里只等待已发出的提交，不改变原错误语义。
+            }
+          }
+          await this.settleCancelledLocalTask(
+            conversationId,
+            localTask.assistantMessageId,
+            replaceSnapshot,
+            () => replacementCommitted
+          );
+        }
+        return;
+      }
+
       if (replaceSnapshot && !replacementCommitted) {
         await this.store.restoreConversationSnapshot(replaceSnapshot);
       } else {
@@ -416,11 +562,134 @@ export class ConversationSession {
         }
       }
       throw error;
+    } finally {
+      if (localTask) {
+        this.clearLocalTaskStopFallbackTimer(localTask);
+        if (this.activeLocalTask === localTask) {
+          this.activeLocalTask = null;
+        }
+        localTask.resolveSettled();
+      }
     }
+  }
+
+  private hasActiveTask(): boolean {
+    return this.activeStream !== null || this.activeLocalTask !== null;
   }
 
   private isCurrentStream(stream: ActiveStream): boolean {
     return this.activeStream === stream && !stream.forceStopped;
+  }
+
+  private selectProviderMessagesWithinBudget(
+    messages: MessageRecord[],
+    requestContextChars: number,
+    modelConfig: ResolvedModelConfig,
+    contextSummary?: ConversationContextSummary
+  ): MessageRecord[] {
+    const contextWindowTokens = resolveModelContextWindowTokens(modelConfig);
+    const maxChars = Math.max(
+      4000,
+      Math.floor(contextWindowTokens * PROVIDER_CONTEXT_CHARS_PER_TOKEN)
+    );
+    const summarySelection = contextSummary
+      ? selectProviderMessagesWithContextSummary(messages, contextSummary)
+      : null;
+    const summaryMessage = summarySelection?.summaryMessage ?? null;
+    const summaryChars = summaryMessage
+      ? estimateProviderMessageChars(summaryMessage, PROVIDER_IMAGE_CONTEXT_COST_CHARS)
+      : 0;
+    const result = trimProviderMessagesForBudget(
+      summarySelection?.recentMessages ?? messages,
+      {
+        maxChars,
+        reservedChars: requestContextChars
+          + Math.floor(PROVIDER_RESPONSE_RESERVE_TOKENS * PROVIDER_CONTEXT_CHARS_PER_TOKEN)
+          + summaryChars,
+        imageCostChars: PROVIDER_IMAGE_CONTEXT_COST_CHARS
+      }
+    );
+
+    const selectedMessages: MessageRecord[] = [];
+    if (summaryMessage) {
+      selectedMessages.push(summaryMessage);
+    }
+    if (result.truncated) {
+      selectedMessages.push(this.buildProviderContextTrimNotice(
+        result.omittedCount,
+        Boolean(summaryMessage)
+      ));
+    }
+    selectedMessages.push(...result.messages);
+    return selectedMessages;
+  }
+
+  private buildProviderContextTrimNotice(
+    omittedCount: number,
+    afterSummary: boolean
+  ): MessageRecord {
+    return {
+      id: "sidet-context-trim-notice",
+      role: "system",
+      text: afterSummary
+        ? `摘要之后仍有约 ${omittedCount} 条消息因上下文长度限制已省略。请优先依据较早对话摘要、最近的消息和本轮提供的材料回答；缺少必要背景时请明确说明。`
+        : `较早的约 ${omittedCount} 条消息因上下文长度限制已省略。请优先依据最近的消息和本轮提供的材料回答；缺少必要背景时请明确说明。`,
+      createdAt: Date.now(),
+      status: "done"
+    };
+  }
+
+  private async maybeSummarizeConversationContext(
+    conversationId: string,
+    modelConfig: ResolvedModelConfig
+  ): Promise<void> {
+    const conversation = this.store.getConversation(conversationId);
+    if (!conversation || conversation.isArchived) {
+      return;
+    }
+    const range = findContextSummaryRange(conversation);
+    if (!range) {
+      return;
+    }
+    const input = buildContextSummaryInput(range);
+    if (!input) {
+      return;
+    }
+
+    const abortController = new AbortController();
+    const timeout = window.setTimeout(() => abortController.abort(), CONTEXT_SUMMARY_TIMEOUT_MS);
+    try {
+      const reply = await this.collectProviderReply(
+        modelConfig,
+        buildContextSummaryRequestMessages(input),
+        {
+          webSearchMode: "off",
+          reasoningMode: "off",
+          signal: abortController.signal
+        }
+      );
+      const text = normalizeContextSummaryText(reply.contentText);
+      if (!text) {
+        return;
+      }
+      const currentConversation = this.store.getConversation(conversationId);
+      if (!currentConversation || currentConversation.isArchived) {
+        return;
+      }
+      const currentRange = findContextSummaryRange(currentConversation);
+      if (!currentRange || currentRange.endMessage.id !== range.endMessage.id) {
+        return;
+      }
+      await this.store.setConversationContextSummary(conversationId, {
+        text,
+        summarizedThroughMessageId: range.endMessage.id,
+        updatedAt: Date.now()
+      });
+    } catch {
+      // 摘要失败不影响主对话；下一轮再试。
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }
 
   private withRequestContext(
@@ -465,6 +734,7 @@ export class ConversationSession {
     options: {
       webSearchMode?: WebSearchMode;
       reasoningMode?: ReasoningMode;
+      signal?: AbortSignal;
     } = {}
   ): Promise<{
     contentText: string;
@@ -483,6 +753,7 @@ export class ConversationSession {
       onReasoningChunk?: (chunk: string, state: { contentText: string; reasoningText: string }) => void;
       onContentChunk?: (chunk: string, state: { contentText: string; reasoningText: string }) => void;
       shouldStop?: (state: { contentText: string; reasoningText: string }) => boolean;
+      signal?: AbortSignal;
     } = {}
   ): Promise<{
     contentText: string;
@@ -494,7 +765,16 @@ export class ConversationSession {
       throw new Error("请先在模型设置里填写这条模型的 API Key。");
     }
 
+    const externalSignal = options.signal;
+    if (externalSignal?.aborted) {
+      throw createAbortError();
+    }
+
     const abortController = new AbortController();
+    const abortFromExternalSignal = (): void => {
+      abortController.abort();
+    };
+    externalSignal?.addEventListener("abort", abortFromExternalSignal, { once: true });
     let contentText = "";
     let reasoningText = "";
     let stoppedEarly = false;
@@ -532,9 +812,15 @@ export class ConversationSession {
         }
       }
     } catch (error) {
-      if (!(stoppedEarly && error instanceof DOMException && error.name === "AbortError")) {
+      if (!(stoppedEarly && isAbortError(error))) {
         throw error;
       }
+    } finally {
+      externalSignal?.removeEventListener("abort", abortFromExternalSignal);
+    }
+
+    if (externalSignal?.aborted && !stoppedEarly) {
+      throw createAbortError();
     }
 
     return {
@@ -642,6 +928,62 @@ export class ConversationSession {
     }
   }
 
+  private clearLocalTaskStopFallbackTimer(task: ActiveLocalTask): void {
+    if (task.stopFallbackTimer === null) {
+      return;
+    }
+
+    window.clearTimeout(task.stopFallbackTimer);
+    task.stopFallbackTimer = null;
+  }
+
+  private async settleCancelledLocalTask(
+    conversationId: string,
+    assistantMessageId: string,
+    replaceSnapshot: ConversationSnapshot | null,
+    isReplacementCommitted: () => boolean
+  ): Promise<void> {
+    if (replaceSnapshot && !isReplacementCommitted()) {
+      await this.store.restoreConversationSnapshot(replaceSnapshot);
+      return;
+    }
+
+    const latest = this.store.getConversation(conversationId)?.messages.find(
+      (message) => message.id === assistantMessageId
+    );
+    if (!latest) {
+      return;
+    }
+    if (hasAssistantContent(latest)) {
+      await this.store.finishAssistantMessage(conversationId, assistantMessageId);
+    } else {
+      await this.store.removeMessage(conversationId, assistantMessageId);
+    }
+  }
+
+  private async forceStopLocalTask(task: ActiveLocalTask): Promise<void> {
+    if (this.activeLocalTask !== task) {
+      return;
+    }
+
+    task.forceStopped = true;
+    this.clearLocalTaskStopFallbackTimer(task);
+
+    try {
+      await this.settleCancelledLocalTask(
+        task.conversationId,
+        task.assistantMessageId,
+        task.replaceSnapshot,
+        task.isReplacementCommitted ?? (() => false)
+      );
+    } finally {
+      if (this.activeLocalTask === task) {
+        this.activeLocalTask = null;
+      }
+      task.resolveSettled();
+    }
+  }
+
   private async forceStopStream(stream: ActiveStream): Promise<void> {
     if (this.activeStream !== stream) {
       return;
@@ -667,4 +1009,27 @@ export class ConversationSession {
       }
     }
   }
+}
+
+function hasAssistantContent(message: MessageRecord): boolean {
+  if (message.text.trim().length > 0 || message.reasoningText?.trim()) {
+    return true;
+  }
+  return (message.metaPanels ?? []).some(
+    (panel) => Boolean(panel.text?.trim()) || (panel.sources?.length ?? 0) > 0
+  );
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError"
+    || error instanceof Error && error.name === "AbortError";
+}
+
+function createAbortError(): Error {
+  if (typeof DOMException === "function") {
+    return new DOMException("已取消", "AbortError");
+  }
+  const error = new Error("已取消");
+  error.name = "AbortError";
+  return error;
 }

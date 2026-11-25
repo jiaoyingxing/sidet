@@ -57,10 +57,66 @@ async function main() {
   assert.equal(module.resolveScrollBottomTarget(300, 400), 0);
   assert.equal(module.resolveScrollBottomTarget(0, 0), 0);
 
+  assert.equal(
+    module.computeMessageRevealScrollTop({
+      hostScrollTop: 200,
+      hostTop: 100,
+      itemTop: 600
+    }),
+    688,
+    "message reveal should align the item top with a 12px breathing gap"
+  );
+  assert.equal(
+    module.computeMessageRevealScrollTop({
+      hostScrollTop: 0,
+      hostTop: 100,
+      itemTop: 90
+    }),
+    0,
+    "message reveal must not produce a negative scroll top"
+  );
+  assert.equal(
+    module.computeMessageRevealScrollTop({
+      hostScrollTop: 50,
+      hostTop: 100,
+      itemTop: 300,
+      padding: 0
+    }),
+    250,
+    "message reveal padding should be configurable"
+  );
+
   assert.equal(module.shouldShowScrollBottomButton(true, false), true);
   assert.equal(module.shouldShowScrollBottomButton(true, true), false);
   assert.equal(module.shouldShowScrollBottomButton(false, false), false);
   assert.equal(module.shouldShowScrollBottomButton(false, true), false);
+
+  // 移动输入框悬空时，留白要含输入框到底缘的位移，而不是只加自身高度。
+  assert.equal(
+    module.resolveMobileComposerReservedSpace({
+      scrollContentBottom: 810,
+      composerTop: 690,
+      gap: 8
+    }),
+    128
+  );
+  assert.equal(
+    module.resolveMobileComposerReservedSpace({
+      scrollContentBottom: 810,
+      composerTop: 694.4,
+      gap: 8
+    }),
+    124
+  );
+  // 输入框不再覆盖内容时留白归零，不产生负值或多余空白。
+  assert.equal(
+    module.resolveMobileComposerReservedSpace({
+      scrollContentBottom: 700,
+      composerTop: 760,
+      gap: 8
+    }),
+    0
+  );
 
   console.log("chat view layout metrics logic test passed");
 }

@@ -96,8 +96,8 @@ async function assertAggregatedSearchResults(module) {
   assert.equal(payload.results.length, 12, "aggregated results should now keep up to twelve unique results");
   assert.deepEqual(
     payload.results.map((item) => item.title),
-    ["A1", "B1", "Shared", "A2", "B2", "A3", "B3", "A4", "B4", "A5", "B5", "A6"],
-    "aggregated results should interleave providers, dedupe shared URLs, and expand beyond six results"
+    ["A1", "Shared", "B1", "A2", "B2", "A3", "B3", "A4", "B4", "A5", "B5", "A6"],
+    "aggregated results should merge providers, rank multi-provider hits first, dedupe shared URLs, and expand beyond six results"
   );
 }
 
@@ -182,7 +182,7 @@ async function assertNewsQueryFiltering(module) {
   assert.equal(payload.results[0]?.host, "news.example.com");
 }
 
-async function assertGoodEnoughResultsStopFurtherProviders(module) {
+async function assertAllProvidersRunInParallel(module) {
   let providerCCalls = 0;
   const service = new module.WebSearchService({
     getProviders: () => [
@@ -225,8 +225,8 @@ async function assertGoodEnoughResultsStopFurtherProviders(module) {
   });
 
   const payload = await service.search("sidet");
-  assert.equal(payload.results.length, 10, "first two providers should already produce enough merged results");
-  assert.equal(providerCCalls, 0, "search should stop before calling later providers once results are already good enough");
+  assert.equal(payload.results.length, 11, "all providers should contribute to the same merged result set");
+  assert.equal(providerCCalls, 1, "search should query every healthy provider instead of stopping early");
 }
 
 async function main() {
@@ -237,7 +237,7 @@ async function main() {
     await assertAggregatedSearchResults(module);
     await assertCircuitBreaker(module);
     await assertNewsQueryFiltering(module);
-    await assertGoodEnoughResultsStopFurtherProviders(module);
+    await assertAllProvidersRunInParallel(module);
     console.log("web search provider logic test passed");
   } finally {
     for (const tempDir of tempDirs) {

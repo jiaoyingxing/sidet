@@ -1,10 +1,15 @@
 import { PLUGIN_NAME, UNTITLED_CONVERSATION_TITLE } from "../constants";
+import {
+  matchesConversationSearchQuery,
+  type ConversationMessageSearchHit
+} from "../conversations/conversation-search";
 import type { ConversationFolderSummary, ConversationSummary } from "../types";
 import type { WorkspaceController } from "./workspace-controller";
 
 export interface BrowserViewVisibleEntries {
   folders: ConversationFolderSummary[];
   summaries: ConversationSummary[];
+  messageHits: ConversationMessageSearchHit[];
 }
 
 interface BrowserViewToolbarElements {
@@ -157,27 +162,41 @@ export class BrowserViewListRuntime {
     elements.createFolderButtonEl?.toggleClass("is-hidden", isFolderOpen);
     elements.newConversationButtonEl?.toggleClass("is-hidden", isFolderOpen);
     if (elements.searchInputEl) {
-      elements.searchInputEl.placeholder = isFolderOpen ? "搜索文件夹内对话" : "搜索对话标题";
+      elements.searchInputEl.placeholder = "搜索对话与消息";
     }
   }
 
   getVisibleEntries(): BrowserViewVisibleEntries {
+    const query = this.getTrimmedSearchQuery();
+    if (query.length > 0) {
+      const folders = this.controller.store
+        .getFolderSummaries()
+        .filter((folder) => matchesConversationSearchQuery(folder.name, query));
+      const summaries = this.controller.store
+        .getAllSummaries()
+        .filter((summary) => !summary.isArchived)
+        .filter((summary) => summary.messageCount > 0)
+        .filter((summary) => matchesConversationSearchQuery(
+          summary.title || UNTITLED_CONVERSATION_TITLE,
+          query
+        ));
+      const messageHits = this.controller.store.searchMessageContent(query);
+      return { folders, summaries, messageHits };
+    }
+
     const folders = this.currentFolderId
       ? []
-      : this.controller.store
-        .getFolderSummaries()
-        .filter((folder) => this.matchesSearch(folder.name));
+      : this.controller.store.getFolderSummaries();
     const summaries = this.controller.store
       .getSummariesInFolder(this.currentFolderId)
-      .filter((summary) => summary.messageCount > 0)
-      .filter((summary) => this.matchesSearch(summary.title || UNTITLED_CONVERSATION_TITLE));
+      .filter((summary) => summary.messageCount > 0);
 
-    return { folders, summaries };
+    return { folders, summaries, messageHits: [] };
   }
 
   buildEmptyText(isSearching: boolean): string {
     if (isSearching) {
-      return this.currentFolderId ? "没有匹配的对话标题。" : "没有匹配的对话或文件夹。";
+      return "没有匹配的对话、文件夹或消息。";
     }
     return this.currentFolderId ? "这个文件夹里还没有对话。" : `${PLUGIN_NAME} 还没有任何已发送的对话。`;
   }
@@ -236,14 +255,6 @@ export class BrowserViewListRuntime {
     searchInputEl.value = "";
   }
 
-  private matchesSearch(title: string): boolean {
-    const query = this.searchQuery.trim().toLocaleLowerCase();
-    if (!query) {
-      return true;
-    }
-    return title.toLocaleLowerCase().includes(query);
-  }
-
   private buildListSignature(entries: BrowserViewVisibleEntries): string {
     const folderParts = entries.folders.map((folder) => [
       "folder",
@@ -258,10 +269,18 @@ export class BrowserViewListRuntime {
       summary.folderId ?? "",
       summary.isPinned ? "1" : "0"
     ].join(":"));
+    const messageHitParts = (entries.messageHits ?? []).map((hit) => [
+      "message",
+      hit.conversationId,
+      hit.messageId,
+      hit.snippet
+    ].join(":"));
     return [
       this.currentFolderId ?? "root",
+      this.getTrimmedSearchQuery(),
       ...folderParts,
-      ...summaryParts
+      ...summaryParts,
+      ...messageHitParts
     ].join("|");
   }
 

@@ -35,30 +35,6 @@ function assertVisibleProcessNotes(module) {
 }
 
 function assertFallbackSearchPolicy(module) {
-  assert.equal(
-    module.shouldRecoverMalformedSearchRouting("```sidet-search\nquery1: test\n```"),
-    true,
-    "malformed routing content that already attempted sidet-search should stay recoverable"
-  );
-
-  assert.equal(
-    module.shouldRecoverMalformedSearchRouting("我先想一下再答复"),
-    false,
-    "ordinary routing text should not be upgraded into forced web search by script heuristics"
-  );
-
-  assert.equal(
-    module.isMalformedWebSearchProtocolReply("sidet-fetch\nround: 3\npick1: https://example.com"),
-    true,
-    "bare sidet-fetch text should be treated as a malformed protocol attempt"
-  );
-
-  assert.equal(
-    module.isMalformedWebSearchProtocolReply("我准备继续抓一页网页正文再回答。"),
-    false,
-    "ordinary visible answer text should not be treated as a malformed protocol attempt"
-  );
-
   assert.deepEqual(
     module.buildFallbackSearchQueries("帮我查一下 Sidet 最新 release"),
     ["最新 Sidet release", "Sidet 最新 release"],

@@ -42,6 +42,7 @@ function createHarness(ChatViewDraftRuntime) {
   let chipSyncCount = 0;
   let buttonSyncCount = 0;
   let clearDraftAttachmentCount = 0;
+  let focusActiveCount = 0;
   let requestContextPrefix = null;
   const sendErrors = [];
   const controller = {
@@ -65,7 +66,9 @@ function createHarness(ChatViewDraftRuntime) {
     getTextareaEl: () => null,
     getPreferredComposerTextarea: () => null,
     focusComposerTextarea: () => undefined,
-    focusActiveComposerTextarea: () => undefined,
+    focusActiveComposerTextarea: () => {
+      focusActiveCount += 1;
+    },
     scheduleViewportSync: () => undefined,
     syncComposerLayout: () => undefined,
     syncComposerButtons: () => {
@@ -116,6 +119,7 @@ function createHarness(ChatViewDraftRuntime) {
     getChipSyncCount: () => chipSyncCount,
     getButtonSyncCount: () => buttonSyncCount,
     getClearDraftAttachmentCount: () => clearDraftAttachmentCount,
+    getFocusActiveCount: () => focusActiveCount,
     setRequestContextPrefix: (value) => {
       requestContextPrefix = value;
     },
@@ -158,6 +162,7 @@ async function assertEditingStateWaitsForReplacementCommit(module) {
   assert.equal(harness.getLocalDraft(), "", "draft should stay cleared after successful replacement");
   assert.equal(harness.getClearDraftAttachmentCount(), 1, "send should clear attachments once");
   assert.ok(harness.getChipSyncCount() > 0, "replacement commit should resync chips");
+  assert.equal(harness.getFocusActiveCount(), 0, "send completion must not refocus the composer");
 }
 
 async function assertPostCommitErrorDoesNotRestoreEditingState(module) {

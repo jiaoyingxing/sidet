@@ -35,6 +35,7 @@ interface CachedWebpageAttachmentPayload {
   name: string;
   url: string;
   content: string;
+  rawContent?: string;
   truncated: boolean;
   size: number;
 }
@@ -621,6 +622,7 @@ export class WebpageContextService {
       name: title,
       url: normalizedUrl,
       content: formatContextBundleBlock(bundle),
+      rawContent: content,
       truncated,
       size: responseText.length
     };

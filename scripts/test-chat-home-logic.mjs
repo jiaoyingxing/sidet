@@ -527,7 +527,7 @@ function assertSingleComposerHomeStateProtection() {
   );
   assert.match(
     ownershipInterruptionSource,
-    /document\.activeElement === textareaEl[\s\S]*textareaEl\?\.blur\(\);[\s\S]*interruptForHostOwnershipLoss\(trigger\);[\s\S]*layerRuntime\.close\(\{\s*blur:\s*false\s*\}\)/,
+    /document\.activeElement === textareaEl[\s\S]*textareaEl\?\.blur\(\);[\s\S]*interruptForHostOwnershipLoss\(trigger\);[\s\S]*closeComposerLayer\(\{\s*blur:\s*false\s*\}\)/,
     "drawer interruption must blur once, release keyboard ownership, and restore the same layer immediately"
   );
   assert.match(

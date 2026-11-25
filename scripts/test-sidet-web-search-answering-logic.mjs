@@ -32,32 +32,39 @@ function createControllerHarness(WorkspaceController) {
   return Object.create(WorkspaceController.prototype);
 }
 
-function buildSearchState() {
+function buildSearchResults() {
+  return [
+    {
+      title: "结果一",
+      url: "https://example.com/1",
+      host: "example.com",
+      snippet: "片段一"
+    },
+    {
+      title: "结果二",
+      url: "https://example.com/2",
+      host: "example.com",
+      snippet: "片段二"
+    }
+  ];
+}
+
+function buildResearchPage(overrides = {}) {
   return {
-    round: 1,
-    selectedQuery: "台湾 新闻 最新",
-    providerLabel: "Bing",
-    results: [
-      {
-        title: "结果一",
-        url: "https://example.com/1",
-        host: "example.com",
-        snippet: "片段一"
-      },
-      {
-        title: "结果二",
-        url: "https://example.com/2",
-        host: "example.com",
-        snippet: "片段二"
-      }
-    ]
+    sourceIndex: 1,
+    title: "Page",
+    url: "https://example.com/page",
+    host: "example.com",
+    content: "完整正文",
+    snippet: "摘要",
+    ...overrides
   };
 }
 
-function assertSearchOnlyFallbackUsesSelectedQuery(controller) {
-  const markdown = controller.buildSearchOnlyFallbackAnswer("台湾 新闻 最新", buildSearchState());
+function assertSearchOnlyFallbackUsesOriginalQuery(controller) {
+  const markdown = controller.buildSearchOnlyFallbackAnswer("台湾 新闻 最新", buildSearchResults());
   assert.match(markdown, /我已经按“台湾 新闻 最新”完成了这轮网页搜索/);
-  assert.match(markdown, /上面的联网搜索里，共 2 条/);
+  assert.match(markdown, /共 2 条/);
   assert.doesNotMatch(markdown, /\[结果一\]\(https:\/\/example.com\/1\)/);
 }
 
@@ -97,8 +104,9 @@ async function assertDisplayableAnswerStreamsIncrementally(controller) {
     }
   };
 
-  await controller.streamDisplayableModelAnswer(runtime, []);
+  const visibleText = await controller.streamDisplayableModelAnswer(runtime, []);
 
+  assert.equal(visibleText, "第一段第二段");
   assert.deepEqual(reasoningChunks, ["先判断一下。"], "reasoning should stream through runtime");
   assert.deepEqual(contentChunks, ["第一段", "第二段"], "visible answer should stream as diffs instead of a final whole block");
   assert.equal(
@@ -117,33 +125,33 @@ async function assertProtocolReplyStreamsReasoning(controller) {
     },
     streamModelReply: async (_messages, options = {}) => {
       streamOptions.push(options);
-      options.onReasoningChunk?.("先看一下用户真正想搜什么。", {
+      options.onReasoningChunk?.("先看一下还缺什么。", {
         contentText: "",
-        reasoningText: "先看一下用户真正想搜什么。"
+        reasoningText: "先看一下还缺什么。"
       });
       return {
-        contentText: "```sidet-search\nquery1: GitHub Trending 最新\n```",
-        reasoningText: "先看一下用户真正想搜什么。",
+        contentText: "```sidet-research\nquestion: 2026 年 GitHub 热门项目\n```",
+        reasoningText: "先看一下还缺什么。",
         stoppedEarly: true
       };
     }
   };
 
   const reply = await controller.streamProtocolReply(runtime, [], {
-    parseSearch: true
+    parseResearch: true
   });
 
   assert.deepEqual(
     reasoningChunks,
-    ["先看一下用户真正想搜什么。"],
-    "protocol rounds should now stream model reasoning into deep-thinking"
+    ["先看一下还缺什么。"],
+    "research decision rounds should stream model reasoning into deep-thinking"
   );
   assert.equal(
     Object.prototype.hasOwnProperty.call(streamOptions[0] ?? {}, "reasoningMode"),
     false,
     "protocol rounds should no longer force reasoningMode off"
   );
-  assert.match(reply.contentText, /sidet-search/, "protocol reply should still return the collected protocol block");
+  assert.match(reply.contentText, /sidet-research/, "protocol reply should still return the collected protocol block");
 }
 
 async function assertDisplayableAnswerFallsBackWhenNoVisibleText(controller) {
@@ -155,7 +163,7 @@ async function assertDisplayableAnswerFallsBackWhenNoVisibleText(controller) {
     },
     appendReasoning: () => undefined,
     streamModelReply: async () => ({
-      contentText: "```sidet-direct\nreason: 继续处理\n```",
+      contentText: "```sidet-research\nquestion: 继续处理\n```",
       reasoningText: "",
       stoppedEarly: false
     }),
@@ -168,15 +176,16 @@ async function assertDisplayableAnswerFallsBackWhenNoVisibleText(controller) {
     }
   };
 
-  await controller.streamDisplayableModelAnswer(runtime, [], {
+  const visibleText = await controller.streamDisplayableModelAnswer(runtime, [], {
     fallbackText: "回退答复"
   });
 
+  assert.equal(visibleText, "回退答复");
   assert.deepEqual(contentChunks, ["回退答复"], "when no visible text can be repaired, fallback text should be emitted");
   assert.deepEqual(repairOptions, { webSearchMode: "off" }, "repair round should only turn off web search");
 }
 
-async function assertWebSearchFinalAnswerBuildsRepairRound(controller) {
+async function assertWebSearchFinalAnswerUsesResearchContext(controller) {
   let captured = null;
   controller.streamDisplayableModelAnswer = async (_runtime, messages, options) => {
     captured = { messages, options };
@@ -193,137 +202,168 @@ async function assertWebSearchFinalAnswerBuildsRepairRound(controller) {
         status: "done"
       }
     ],
-    buildSearchState(),
-    "帮我从网上搜一下台湾最近新闻",
-    "上一轮半成品"
+    {
+      originalQuery: "帮我从网上搜一下台湾最近新闻",
+      exhausted: true,
+      pages: [],
+      searchResults: buildSearchResults()
+    }
   );
 
   assert.ok(captured, "final answer helper should delegate to streamDisplayableModelAnswer");
-  assert.match(captured.messages[0].text, /联网最终答复修正/, "seeded final answer should use repair context");
-  assert.equal(captured.messages.at(-1).text, "上一轮半成品", "seed text should be appended as the last assistant message");
+  assert.match(captured.messages[0].text, /联网最终答复/, "final answer should use the research final-answer context");
+  assert.match(captured.messages[0].text, /预算/, "exhausted final answer should mention the budget boundary");
   assert.match(
     captured.options.fallbackText,
-    /我已经按“台湾 新闻 最新”完成了这轮网页搜索/,
-    "fallback should prefer the executed search query"
+    /我已经按“帮我从网上搜一下台湾最近新闻”完成了这轮网页搜索/,
+    "fallback should prefer the original user query"
   );
 }
 
-async function assertModelDrivenWebSearchStopsOnVisibleAnswer(controller) {
-  const appendedContent = [];
-  let protocolCallCount = 0;
+function assertStructuredSourcesWithFetchedSources(controller) {
+  const recordedSources = [];
+  const runtime = {
+    setSources: (sources) => recordedSources.push(sources),
+    getAbortSignal: () => new AbortController().signal
+  };
 
-  controller.runSearchInstruction = async () => ({
-    round: 1,
-    selectedQuery: "github 热门项目",
-    providerLabel: "GitHub + Bing",
-    results: [
-      {
-        title: "GitHub Trending",
-        url: "https://github.com/trending",
-        host: "github.com",
-        snippet: "Trending repositories on GitHub today"
-      }
-    ]
-  });
-  controller.repairWebSearchContinuation = async () => {
-    throw new Error("should not repair when a visible answer already exists");
+  controller.commitWebSearchSources(runtime, [
+    buildResearchPage({
+      title: "Page [One]",
+      url: "https://example.com/page",
+      content: "完整正文",
+      snippet: "摘要"
+    }),
+    buildResearchPage({
+      sourceIndex: 2,
+      title: "Page [One] duplicate",
+      url: "https://example.com/page"
+    })
+  ], []);
+
+  assert.equal(recordedSources.length, 1, "fetched sources should set structured sources once");
+  assert.equal(recordedSources[0].length, 1, "duplicate URLs should be collapsed");
+  assert.equal(recordedSources[0][0].title, "Page [One]");
+  assert.equal(recordedSources[0][0].url, "https://example.com/page");
+  assert.equal(recordedSources[0][0].host, "example.com");
+  assert.equal(recordedSources[0][0].note, "摘要");
+  assert.equal(recordedSources[0][0].readDepth, "full");
+
+  const summarySources = [];
+  controller.commitWebSearchSources({
+    setSources: (sources) => summarySources.push(sources),
+    getAbortSignal: () => new AbortController().signal
+  }, [], buildSearchResults());
+  assert.equal(summarySources[0].length, 2);
+  assert.equal(summarySources[0][0].readDepth, "summary");
+
+  const abortedSources = [];
+  controller.commitWebSearchSources({
+    setSources: (sources) => abortedSources.push(sources),
+    getAbortSignal: () => AbortSignal.abort()
+  }, [buildResearchPage()], []);
+  assert.deepEqual(abortedSources, [], "a cancelled task should not set sources");
+}
+
+async function assertResearchRoundWiring(controller) {
+  const calls = {
+    search: [],
+    fetch: [],
+    complete: [],
+    panels: [],
+    sources: [],
+    content: []
   };
-  controller.streamWebSearchFinalAnswer = async () => {
-    throw new Error("should not enter final-answer repair when visible answer already exists");
-  };
-  controller.streamProtocolReply = async () => {
-    protocolCallCount += 1;
-    if (protocolCallCount === 1) {
+  controller.webSearch = {
+    searchMany: async (queries, options = {}) => {
+      calls.search.push({ queries, options });
+      options.onProgress?.({ message: "并行执行 2 组搜索词…" });
       return {
-        contentText: "```sidet-search\nquery1: github 热门项目\n```",
-        reasoningText: ""
+        providerLabel: "Bing + 百度",
+        results: [
+          {
+            title: "Result A",
+            url: "https://a.example.com/1",
+            host: "a.example.com",
+            snippet: "snippet A"
+          },
+          {
+            title: "Result B",
+            url: "https://b.example.com/1",
+            host: "b.example.com",
+            snippet: "snippet B"
+          }
+        ]
       };
     }
-
+  };
+  controller.buildWebpageAttachment = async (url) => {
+    calls.fetch.push(url);
     return {
-      contentText: "我查到最近 GitHub 上比较热的项目可以先看 GitHub Trending，再按语言或时间筛一轮。",
-      reasoningText: ""
+      id: `attachment-${calls.fetch.length}`,
+      type: "webpage",
+      name: `Page ${calls.fetch.length}`,
+      url,
+      content: `formatted ${url}`,
+      rawContent: `raw ${url}`,
+      truncated: false,
+      size: 10
     };
   };
 
   const runtime = {
-    appendContent: (chunk) => {
-      appendedContent.push(chunk);
-    },
     buildRequestMessages: () => [],
-    appendMetaPanelText: () => undefined,
-    setMetaPanelSources: () => undefined
-  };
-
-  await controller.runModelDrivenWebSearch("最近 github 上有什么热门的项目吗？", null, runtime);
-
-  assert.equal(protocolCallCount, 2, "search flow should stop once the model returns a visible answer");
-  assert.deepEqual(
-    appendedContent,
-    ["我查到最近 GitHub 上比较热的项目可以先看 GitHub Trending，再按语言或时间筛一轮。"],
-    "visible answer should be emitted directly instead of entering repair/fallback"
-  );
-}
-
-async function assertModelDrivenWebSearchRepairsMalformedProtocol(controller) {
-  const appendedContent = [];
-  let protocolCallCount = 0;
-  let repairCallCount = 0;
-
-  controller.runSearchInstruction = async () => ({
-    round: 1,
-    selectedQuery: "俄罗斯 最新 热点新闻 2026年6月",
-    providerLabel: "搜狗 + Bing",
-    results: [
-      {
-        title: "结果一",
-        url: "https://example.com/1",
-        host: "example.com",
-        snippet: "片段一"
+    completeModelReply: async (messages) => {
+      calls.complete.push(messages.map((message) => message.text).join("\n"));
+      const systemText = messages[0]?.text ?? "";
+      if (systemText.includes("检索规划")) {
+        return { contentText: "query1: alpha\nquery2: beta", reasoningText: "" };
       }
-    ]
-  });
-  controller.streamWebSearchFinalAnswer = async () => {
-    throw new Error("should not need final-answer repair when continuation repair already returns a visible answer");
-  };
-  controller.streamProtocolReply = async () => {
-    protocolCallCount += 1;
-    if (protocolCallCount === 1) {
-      return {
-        contentText: "```sidet-search\nquery1: 俄罗斯 最新 热点新闻 2026年6月\n```",
-        reasoningText: ""
-      };
-    }
-
-    return {
-      contentText: "sidet-fetch\nround: 3\npick1: https://example.com/1\nreason: 我先抓这一条正文确认细节。",
-      reasoningText: ""
-    };
-  };
-  controller.repairWebSearchContinuation = async () => {
-    repairCallCount += 1;
-    return {
-      contentText: "我先基于现有结果给你一个阶段性判断：近期俄罗斯相关热点主要集中在局势进展和经济信号两条线。",
-      reasoningText: ""
-    };
-  };
-
-  const runtime = {
-    appendContent: (chunk) => {
-      appendedContent.push(chunk);
+      if (systemText.includes("证据整理")) {
+        return { contentText: "结论：已经读到正文 [1]", reasoningText: "" };
+      }
+      return { contentText: "", reasoningText: "" };
     },
-    buildRequestMessages: () => [],
-    appendMetaPanelText: () => undefined,
-    setMetaPanelSources: () => undefined
+    streamModelReply: async () => ({
+      contentText: "这是最终答案",
+      reasoningText: "",
+      stoppedEarly: false
+    }),
+    appendContent: (chunk) => calls.content.push(chunk),
+    appendReasoning: () => undefined,
+    appendMetaPanelText: (panel, text) => calls.panels.push({ panel, text }),
+    setMetaPanelSources: () => undefined,
+    setSources: (sources) => calls.sources.push(sources),
+    getAbortSignal: () => new AbortController().signal
   };
 
-  await controller.runModelDrivenWebSearch("最近有没有什么热门的新闻有关于俄罗斯方面的。", null, runtime);
+  await controller.runModelDrivenWebSearch("测试研究问题", null, runtime);
 
-  assert.equal(repairCallCount, 1, "malformed bare protocol text should enter continuation repair");
-  assert.deepEqual(
-    appendedContent,
-    ["我先基于现有结果给你一个阶段性判断：近期俄罗斯相关热点主要集中在局势进展和经济信号两条线。"],
-    "malformed protocol text should not leak to the user as final visible content"
+  assert.equal(calls.search.length, 1, "research should call searchMany once");
+  assert.deepEqual(calls.search[0].queries, ["alpha", "beta"]);
+  assert.equal(calls.search[0].options.maxQueries, 4);
+  assert.deepEqual(calls.fetch, [
+    "https://a.example.com/1",
+    "https://b.example.com/1"
+  ], "the agent should fetch selected pages in ranked order");
+  assert.equal(calls.complete.length, 2, "research should use one query-expansion and one evidence-compression call");
+  assert.ok(calls.complete[0].includes("检索规划"));
+  assert.ok(calls.complete[1].includes("证据整理"));
+  assert.deepEqual(calls.content, ["这是最终答案"]);
+  assert.equal(calls.sources.length, 1);
+  assert.deepEqual(calls.sources[0].map((source) => source.url), [
+    "https://a.example.com/1",
+    "https://b.example.com/1"
+  ]);
+  assert.equal(calls.sources[0][0].readDepth, "full");
+  assert.ok(
+    calls.panels.some(({ panel, text }) => panel.kind.startsWith("web-step-research-") && text.includes("研究问题：测试研究问题")),
+    "research should expose its question in the web-search process panel"
+  );
+  assert.ok(calls.panels.some(({ text }) => text.includes("检索词：alpha / beta")));
+  assert.ok(
+    calls.panels.every(({ text }) => !/联网思考未能在当前轮次内完成|超过当前轮次预算/.test(text)),
+    "the old five-step failure card should no longer appear"
   );
 }
 
@@ -331,13 +371,13 @@ async function main() {
   try {
     const module = await loadBundledModule("src/workspace/workspace-controller.ts");
     const controller = createControllerHarness(module.WorkspaceController);
-    assertSearchOnlyFallbackUsesSelectedQuery(controller);
+    assertSearchOnlyFallbackUsesOriginalQuery(controller);
     await assertDisplayableAnswerStreamsIncrementally(controller);
     await assertProtocolReplyStreamsReasoning(controller);
     await assertDisplayableAnswerFallsBackWhenNoVisibleText(controller);
-    await assertWebSearchFinalAnswerBuildsRepairRound(controller);
-    await assertModelDrivenWebSearchStopsOnVisibleAnswer(controller);
-    await assertModelDrivenWebSearchRepairsMalformedProtocol(controller);
+    await assertWebSearchFinalAnswerUsesResearchContext(controller);
+    assertStructuredSourcesWithFetchedSources(controller);
+    await assertResearchRoundWiring(controller);
     console.log("sidet web search answering logic test passed");
   } finally {
     for (const tempDir of tempDirs) {

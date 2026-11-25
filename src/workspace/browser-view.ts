@@ -24,6 +24,7 @@ export class BrowserView extends ItemView {
   private rowElements = new Map<string, { item: HTMLDivElement; navTarget: HTMLDivElement }>();
   private searchWrapEl: HTMLDivElement | null = null;
   private searchInputEl: HTMLInputElement | null = null;
+  private searchRenderTimer: number | null = null;
   private activeInlineMenu: InlineActionMenuHandle | null = null;
   private readonly listRuntime = new BrowserViewListRuntime(this.controller);
   private readonly rowRenderer = new BrowserViewRowRenderer({
@@ -73,6 +74,7 @@ export class BrowserView extends ItemView {
     this.unsubscribeStore = null;
     this.unsubscribeWorkspace?.();
     this.unsubscribeWorkspace = null;
+    this.clearSearchRenderTimer();
     this.activeInlineMenu?.close();
     this.activeInlineMenu = null;
     this.rowElements.clear();
@@ -114,7 +116,7 @@ export class BrowserView extends ItemView {
     const toolbarActions = this.toolbarEl.createDiv({ cls: "sidet-browser-toolbar-actions" });
     createIconButton(toolbarActions, {
       icon: "search",
-      label: "搜索对话标题",
+      label: "搜索对话与消息",
       preserveFocus: false,
       onClick: () => {
         this.toggleSearch();
@@ -147,9 +149,10 @@ export class BrowserView extends ItemView {
     this.listRuntime.syncSearchInput(this.searchInputEl);
     this.searchInputEl.addEventListener("input", () => {
       this.listRuntime.setSearchQuery(this.searchInputEl?.value ?? "");
-      this.renderList();
+      this.scheduleSearchRender();
     });
     this.searchInputEl.addEventListener("blur", () => {
+      this.clearSearchRenderTimer();
       this.listRuntime.scheduleHideSearch(this.searchWrapEl, this.searchInputEl, () => this.renderList());
     });
     this.searchInputEl.addEventListener("keydown", (event) => {
@@ -157,6 +160,7 @@ export class BrowserView extends ItemView {
         return;
       }
       event.preventDefault();
+      this.clearSearchRenderTimer();
       this.listRuntime.hideSearch(this.searchWrapEl, this.searchInputEl, () => this.renderList());
     });
 
@@ -197,7 +201,11 @@ export class BrowserView extends ItemView {
     const activeConversationId = this.controller.getActiveConversationId();
     this.listRuntime.markRendered(entries, activeConversationId);
 
-    if (entries.folders.length === 0 && entries.summaries.length === 0) {
+    if (
+      entries.folders.length === 0
+      && entries.summaries.length === 0
+      && entries.messageHits.length === 0
+    ) {
       const emptyText = this.buildEmptyText(isSearching);
       this.listEl.createDiv({
         cls: "sidet-empty",
@@ -209,9 +217,50 @@ export class BrowserView extends ItemView {
     for (const folder of entries.folders) {
       this.rowRenderer.renderFolderRow(folder, (folderId) => this.openFolder(folderId));
     }
+    if (isSearching) {
+      if (entries.folders.length > 0) {
+        this.listEl.createDiv({ cls: "sidet-browser-section-label", text: "文件夹" });
+        for (const folder of entries.folders) {
+          this.rowRenderer.renderFolderRow(folder, (folderId) => this.openFolder(folderId));
+        }
+      }
+      if (entries.summaries.length > 0) {
+        this.listEl.createDiv({ cls: "sidet-browser-section-label", text: "对话" });
+        for (const summary of entries.summaries) {
+          const folderName = summary.folderId
+            ? this.controller.store.getFolder(summary.folderId)?.name ?? null
+            : null;
+          this.rowRenderer.renderConversationRow(summary, activeConversationId, folderName);
+        }
+      }
+      if (entries.messageHits.length > 0) {
+        this.listEl.createDiv({ cls: "sidet-browser-section-label", text: "消息" });
+        for (const hit of entries.messageHits) {
+          this.rowRenderer.renderMessageHitRow(hit, activeConversationId);
+        }
+      }
+      return;
+    }
+
     for (const summary of entries.summaries) {
       this.rowRenderer.renderConversationRow(summary, activeConversationId);
     }
+  }
+
+  private scheduleSearchRender(): void {
+    this.clearSearchRenderTimer();
+    this.searchRenderTimer = window.setTimeout(() => {
+      this.searchRenderTimer = null;
+      this.renderList();
+    }, 150);
+  }
+
+  private clearSearchRenderTimer(): void {
+    if (this.searchRenderTimer === null) {
+      return;
+    }
+    window.clearTimeout(this.searchRenderTimer);
+    this.searchRenderTimer = null;
   }
 
   private renderLoadingState(): void {
@@ -250,6 +299,10 @@ export class BrowserView extends ItemView {
       return;
     }
 
+    if (this.listRuntime.getTrimmedSearchQuery().length > 0) {
+      this.renderList();
+      return;
+    }
     const entries = this.getVisibleEntries();
     const activeConversationId = this.controller.getActiveConversationId();
     if (this.listRuntime.tryPatchRenderedActiveConversation(entries, activeConversationId, this.rowElements)) {

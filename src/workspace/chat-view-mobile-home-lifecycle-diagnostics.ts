@@ -1,5 +1,5 @@
 export const MOBILE_HOME_LIFECYCLE_DIAGNOSTIC_BUILD =
-  "20260915-mobile-native-atomic-anchor-v7";
+  "20261124-mobile-tail-compat-guard-v8";
 
 const DIAGNOSTIC_STORE_KEY =
   "__SIDET_MOBILE_HOME_LIFECYCLE_DIAGNOSTICS__";

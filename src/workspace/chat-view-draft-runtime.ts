@@ -9,10 +9,6 @@ export interface DraftMutationOptions {
   immediatePersistence?: boolean;
 }
 
-export interface HandleSendOptions {
-  focusComposer?: boolean;
-}
-
 interface ChatViewDraftRuntimeOptions {
   controller: WorkspaceController;
   leaf: WorkspaceLeaf;
@@ -50,7 +46,7 @@ export class ChatViewDraftRuntime {
     return this.options.getLocalDraft();
   }
 
-  async handleSend(options: HandleSendOptions = {}): Promise<boolean> {
+  async handleSend(): Promise<boolean> {
     const draft = this.options.getLocalDraft();
     const attachments = [...this.options.getDraftAttachments()];
     const editingState = this.options.getEditingMessageState();
@@ -129,9 +125,8 @@ export class ChatViewDraftRuntime {
         }
       });
       commitEditingReplacementUi();
-      if (options.focusComposer !== false) {
-        this.options.focusActiveComposerTextarea();
-      }
+      // 发送完成（含整段流式回复结束）后不再主动聚焦 composer。
+      // 回复后的焦点回填会在移动端重新拉起键盘，打断阅读。
       return true;
     } catch (error) {
       this.options.clearPendingScrollIntent();

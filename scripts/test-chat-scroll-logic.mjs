@@ -198,6 +198,38 @@ function assertAfterSendRestoresBottomInRaf(module) {
   assert.equal(getSyncCalls(), 1, "after-send should resync affordances once after applying bottom scroll");
 }
 
+function assertRevealIntentSkipsBottomScroll(module) {
+  installFakeWindow();
+  const { rendering, scrollHost, getSyncCalls } = createRendering(module);
+  let clearCalls = 0;
+
+  const nextState = rendering.restoreMessageScroll(
+    {
+      conversationId: "conv-1",
+      scrollTop: 160,
+      pinnedToBottom: true
+    },
+    "conv-1",
+    "conv-1:2:user:done:15:0:0",
+    {
+      lastConversationId: "conv-1",
+      lastMessageRevision: "conv-1:1:user:done:5:0:0",
+      pendingScrollIntent: "reveal-message"
+    },
+    {
+      clearPendingScrollIntent: () => {
+        clearCalls += 1;
+      }
+    }
+  );
+
+  assert.equal(clearCalls, 1, "reveal intent should clear immediately");
+  assert.equal(scrollHost.scrollTop, 160, "reveal intent must not jump to the bottom");
+  assert.equal(getSyncCalls(), 0, "reveal intent should leave scrolling to the message reveal step");
+  assert.equal(nextState.lastConversationId, "conv-1");
+  assert.equal(nextState.lastMessageRevision, "conv-1:2:user:done:15:0:0");
+}
+
 function assertQueueScrollIntentCancelsComposerRestore(module) {
   let composerRestoreCancelCalls = 0;
   const runtime = new module.ChatViewConversationRuntime({
@@ -304,6 +336,72 @@ function assertKnowledgeBaseRoutingUpdateInvalidatesConversationRender(module) {
     completeRevision,
     searchingRevision,
     "routing metadata on the user message must rerender immediately even while the assistant placeholder is still the last message"
+  );
+}
+
+function assertOlderAnswerVariantSwitchInvalidatesConversationRender(module) {
+  const runtime = new module.ChatViewConversationRuntime({
+    controller: {},
+    leaf: {},
+    assistantRendering: {},
+    messageActions: {},
+    getMessagesListEl: () => null,
+    addChild: () => undefined,
+    trackMessageRenderComponent: () => undefined,
+    resetMessageRenderComponents: () => undefined,
+    renderAssistantMetaBlocks: () => undefined,
+    shouldRenderAssistantMessageMarkdown: () => false,
+    setPlainMessageContent: () => undefined,
+    renderInlineToolAction: () => undefined,
+    renderWikiMaintenancePlanAction: () => undefined,
+    openWebpageAttachmentPreview: () => undefined,
+    syncComposerButtons: () => undefined,
+    syncLeafHeader: () => undefined,
+    syncScrollAffordances: () => undefined,
+    getScrollHost: () => ({ scrollTop: 0 }),
+    getScrollPinnedToBottom: () => false,
+    setScrollHostTop: () => undefined,
+    setScrollPinnedToBottom: () => undefined,
+    closeInlineSuggests: () => undefined,
+    cancelComposerScrollRestore: () => undefined
+  });
+  const conversation = {
+    id: "conv-variants",
+    messages: [
+      { id: "user-1", role: "user", text: "问题", status: "done" },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        text: "第二版",
+        status: "done",
+        answerVariants: [
+          { id: "assistant-0", text: "第一版", status: "done", createdAt: 1 }
+        ],
+        activeAnswerVariantIndex: 1
+      },
+      { id: "user-2", role: "user", text: "继续", status: "done" },
+      { id: "assistant-2", role: "assistant", text: "最新回答", status: "done" }
+    ]
+  };
+
+  const beforeRevision = runtime.buildMessageRevision(conversation);
+  const beforeOtherRevision = runtime.buildOtherMessagesRevision(conversation);
+  conversation.messages[1].text = "第一版";
+  conversation.messages[1].answerVariants[0].text = "第二版";
+  conversation.messages[1].activeAnswerVariantIndex = 0;
+  const afterRevision = runtime.buildMessageRevision(conversation);
+  const afterOtherRevision = runtime.buildOtherMessagesRevision(conversation);
+
+  assert.notEqual(afterRevision, beforeRevision, "an older answer version switch should invalidate the conversation revision");
+  assert.notEqual(
+    afterOtherRevision,
+    beforeOtherRevision,
+    "the non-latest message signature must catch version switches on older answers"
+  );
+  assert.equal(
+    runtime.buildOtherMessagesRevision({ id: "conv-single", messages: [conversation.messages[3]] }),
+    "",
+    "a single-message conversation has no other-message revision"
   );
 }
 
@@ -629,8 +727,10 @@ async function main() {
     const conversationRuntimeModule = await loadBundledModule("src/workspace/chat-view-conversation-runtime.ts");
     assertAfterSendRestoresBottomInRaf(assistantRenderingModule);
     assertFollowLatestUsesSnapshotPinnedState(assistantRenderingModule);
+    assertRevealIntentSkipsBottomScroll(assistantRenderingModule);
     assertQueueScrollIntentCancelsComposerRestore(conversationRuntimeModule);
     assertKnowledgeBaseRoutingUpdateInvalidatesConversationRender(conversationRuntimeModule);
+    assertOlderAnswerVariantSwitchInvalidatesConversationRender(conversationRuntimeModule);
     assertKnowledgeBaseRoutingUpdateBypassesLatestAssistantPatch(conversationRuntimeModule);
     assertLegacyMobileScrollCompensationsStayRemoved();
     await assertManagedConversationRenderOwnsScrollRestoration(assistantRenderingModule);

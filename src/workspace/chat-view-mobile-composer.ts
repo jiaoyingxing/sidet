@@ -1,3 +1,4 @@
+import { resolveMobileComposerReservedSpace } from "./chat-view-layout-metrics";
 import { ChatViewMobileComposerLayerRuntime } from "./chat-view-mobile-composer-layer";
 import { ChatViewMobileKeyboardFollowRuntime } from "./chat-view-mobile-keyboard-follow";
 import { ChatViewMobileWorkspaceOwnershipGuard } from "./chat-view-mobile-workspace-ownership";
@@ -22,6 +23,7 @@ interface MainComposerElements {
 
 interface ChatViewMobileComposerOptions {
   desktopBottomMessageGap: number;
+  bottomPinThreshold: number;
   getContentEl: () => HTMLElement;
   getRootEl: () => HTMLElement | null;
   getMessagesBottomSpacerEl: () => HTMLElement | null;
@@ -39,7 +41,11 @@ interface ChatViewMobileComposerOptions {
   isComposerReadOnly: () => boolean;
   isPhoneLayout: () => boolean;
   isMobileRuntime: () => boolean;
-  getPendingScrollIntent: () => "none" | "after-send" | "conversation-switch-or-initial-open";
+  getPendingScrollIntent: () =>
+    | "none"
+    | "after-send"
+    | "conversation-switch-or-initial-open"
+    | "reveal-message";
   hasComposerResizeObserver: () => boolean;
   isHomeState: () => boolean;
   onComposerLayerChange: (active: boolean) => void;
@@ -62,6 +68,8 @@ export class ChatViewMobileComposer {
   private readonly workspaceOwnershipGuard: ChatViewMobileWorkspaceOwnershipGuard;
   private viewportSyncTimer: number | null = null;
   private nativeActivationPointerId: number | null = null;
+  private tailCompatibilityGuardArmed = false;
+  private tailCompatibilityGuardCleanup: (() => void) | null = null;
   private composerScrollRestoreFrame: number | null = null;
   private composerScrollRestoreVersion = 0;
   private canExpandComposer = false;
@@ -69,6 +77,7 @@ export class ChatViewMobileComposer {
   private lastTextareaHeight = 0;
   private lastOverflowMode: "hidden" | "auto" = "hidden";
   private lastReservedSpace = 0;
+  private lastRestingReservedSpace = 0;
   private mobileComposerVisualState: "single-line" | "multi-line" = "single-line";
 
   constructor(private readonly options: ChatViewMobileComposerOptions) {
@@ -194,6 +203,12 @@ export class ChatViewMobileComposer {
       return;
     }
     this.options.onNativeActivationEvent?.("native.pointerup.focused");
+    // The reparent is already done, so the compatibility mouse press iOS
+    // synthesises for this same tap would hit-test to the vacated home area
+    // and WebKit would resign the fresh focus to body. Pointer capture pins
+    // that sequence when the engine honours it; this guard covers the case
+    // where the press still reaches the home surface.
+    this.armTailCompatibilityGuard();
   }
 
   cancelComposerActivationPointer(pointerId: number): void {
@@ -201,6 +216,56 @@ export class ChatViewMobileComposer {
       return;
     }
     this.abortNativeComposerActivation("pointer-cancel");
+  }
+
+  bindTailCompatibilityGuard(): void {
+    if (this.tailCompatibilityGuardCleanup) {
+      return;
+    }
+    const rootEl = this.options.getRootEl();
+    if (!rootEl) {
+      return;
+    }
+    // Only the compatibility press that trails an owned activation can be
+    // consumed, and only its default action (the focus walk), never its
+    // propagation: a new physical gesture always starts with pointerdown, so
+    // tapping outside the composer still resigns focus and closes the keyboard.
+    const onPointerDown = (): void => {
+      this.tailCompatibilityGuardArmed = false;
+    };
+    const onCompatMouseEvent = (event: MouseEvent): void => {
+      if (!this.tailCompatibilityGuardArmed || !event.cancelable) {
+        return;
+      }
+      const textareaEl = this.mainComposer.textareaEl;
+      const composerWrapEl = this.mainComposer.composerWrapEl;
+      if (
+        !textareaEl ||
+        !composerWrapEl ||
+        !this.layerRuntime.isActive() ||
+        document.activeElement !== textareaEl
+      ) {
+        return;
+      }
+      const targetEl = event.target as Node | null;
+      if (targetEl && composerWrapEl.contains(targetEl)) {
+        return;
+      }
+      this.tailCompatibilityGuardArmed = false;
+      event.preventDefault();
+      this.options.onNativeActivationEvent?.(
+        "native.tail.compat-default-suppressed"
+      );
+    };
+    rootEl.addEventListener("pointerdown", onPointerDown, true);
+    rootEl.addEventListener("mousedown", onCompatMouseEvent, true);
+    rootEl.addEventListener("mouseup", onCompatMouseEvent, true);
+    this.tailCompatibilityGuardCleanup = () => {
+      rootEl.removeEventListener("pointerdown", onPointerDown, true);
+      rootEl.removeEventListener("mousedown", onCompatMouseEvent, true);
+      rootEl.removeEventListener("mouseup", onCompatMouseEvent, true);
+      this.tailCompatibilityGuardArmed = false;
+    };
   }
 
   syncPlaceholder(): void {
@@ -223,6 +288,8 @@ export class ChatViewMobileComposer {
       this.viewportSyncTimer = null;
     }
     this.clearNativeComposerActivation();
+    this.tailCompatibilityGuardCleanup?.();
+    this.tailCompatibilityGuardCleanup = null;
     this.cancelComposerScrollRestore();
     this.workspaceOwnershipGuard.stop();
     this.keyboardFollowRuntime.release();
@@ -231,6 +298,7 @@ export class ChatViewMobileComposer {
     this.lastTextareaHeight = 0;
     this.lastOverflowMode = "hidden";
     this.lastReservedSpace = 0;
+    this.lastRestingReservedSpace = 0;
     this.mobileComposerVisualState = "single-line";
     this.canExpandComposer = false;
   }
@@ -324,7 +392,31 @@ export class ChatViewMobileComposer {
 
   closeMobileComposerLayer(options: { blur: boolean }): void {
     this.clearNativeComposerActivation();
+    this.closeComposerLayer(options);
+  }
+
+  /**
+   * 输入态把底部留白置 0 并会夹紧滚动位置；回到休息态时留白重新计入，
+   * 原本贴底阅读的对话需要重新贴到新的底部，否则最后一段会落回输入框下面。
+   */
+  private closeComposerLayer(options: { blur: boolean }): void {
+    const scrollHost = this.usesMobileOverlayComposer()
+      ? this.options.getScrollHost()
+      : null;
+    const restoreBottom =
+      scrollHost !== null &&
+      scrollHost.scrollHeight - scrollHost.scrollTop - scrollHost.clientHeight <=
+        this.options.bottomPinThreshold;
     this.layerRuntime.close(options);
+    if (!scrollHost) {
+      return;
+    }
+    if (restoreBottom) {
+      this.options.setScrollHostTop(
+        Math.max(0, scrollHost.scrollHeight - scrollHost.clientHeight)
+      );
+    }
+    this.options.updatePinnedToBottom();
   }
 
   requestWorkspaceOwnershipCheck(trigger: string): void {
@@ -357,7 +449,7 @@ export class ChatViewMobileComposer {
     this.clearNativeComposerActivation();
     if (!this.options.isPhoneLayout() || !this.options.isMobileRuntime()) {
       this.keyboardFollowRuntime.endFocus();
-      this.layerRuntime.close({ blur: false });
+      this.closeComposerLayer({ blur: false });
       return;
     }
 
@@ -381,7 +473,7 @@ export class ChatViewMobileComposer {
         if (document.activeElement === this.mainComposer.textareaEl) {
           return;
         }
-        this.layerRuntime.close({ blur: false });
+        this.closeComposerLayer({ blur: false });
         this.options.syncScrollAffordances();
       });
       return;
@@ -404,7 +496,7 @@ export class ChatViewMobileComposer {
       textareaEl?.blur();
     }
     this.keyboardFollowRuntime.interruptForHostOwnershipLoss(trigger);
-    this.layerRuntime.close({ blur: false });
+    this.closeComposerLayer({ blur: false });
     this.options.syncScrollAffordances();
     recordChatScrollTrace("mobile-composer-workspace-ownership-restored", {
       trigger
@@ -423,6 +515,13 @@ export class ChatViewMobileComposer {
     this.nativeActivationPointerId = null;
   }
 
+  private armTailCompatibilityGuard(): void {
+    if (!this.tailCompatibilityGuardCleanup) {
+      return;
+    }
+    this.tailCompatibilityGuardArmed = true;
+  }
+
   private abortNativeComposerActivation(reason: string): void {
     this.options.onNativeActivationEvent?.(
       `native.activation.abort.${reason}`
@@ -435,7 +534,7 @@ export class ChatViewMobileComposer {
       return;
     }
     this.keyboardFollowRuntime.endFocus();
-    this.layerRuntime.close({ blur: false });
+    this.closeComposerLayer({ blur: false });
     this.options.syncScrollAffordances();
     recordChatScrollTrace("mobile-composer-native-activation-aborted", {
       reason
@@ -479,15 +578,24 @@ export class ChatViewMobileComposer {
   }
 
   private updateComposerReservedSpace(): void {
-    const reservedSpace = this.options.isHomeState()
-      ? 0
-      : this.usesMobileOverlayComposer()
-      ? this.layerRuntime.isActive()
-        ? 0
-        : this.getMobileRestingReservedSpace()
-      : this.usesDesktopOverlayComposer()
-        ? this.getDesktopOverlayReservedSpace()
-        : this.options.desktopBottomMessageGap;
+    const isMobileOverlay = this.usesMobileOverlayComposer();
+    let reservedSpace: number;
+    if (this.options.isHomeState()) {
+      reservedSpace = 0;
+    } else if (isMobileOverlay) {
+      if (this.layerRuntime.isActive()) {
+        // 输入态 composer 在 body layer，撤掉休息态留白会夹紧底部滚动位置，
+        // 让贴底阅读的内容整体下沉；保持休息态值，聚焦前后内容位置不变。
+        reservedSpace = this.lastRestingReservedSpace;
+      } else {
+        reservedSpace = this.getMobileOverlayReservedSpace();
+        this.lastRestingReservedSpace = reservedSpace;
+      }
+    } else if (this.usesDesktopOverlayComposer()) {
+      reservedSpace = this.getDesktopOverlayReservedSpace();
+    } else {
+      reservedSpace = this.options.desktopBottomMessageGap;
+    }
 
     if (reservedSpace === this.lastReservedSpace) {
       return;
@@ -519,15 +627,28 @@ export class ChatViewMobileComposer {
   }
 
   private getMobileOverlayReservedSpace(): number {
-    const activeComposerEl = this.mainComposer.composerWrapEl;
-    const wrapHeight = Math.round(activeComposerEl?.getBoundingClientRect().height ?? 0);
+    const gap = this.options.desktopBottomMessageGap;
+    const contentEl = this.options.getContentEl();
+    const contentRect = contentEl.getBoundingClientRect();
+    const wrapRect = this.mainComposer.composerWrapEl?.getBoundingClientRect() ?? null;
+    if (wrapRect && wrapRect.height > 0 && contentRect.height > 0) {
+      const contentPaddingBottom =
+        Number.parseFloat(window.getComputedStyle(contentEl).paddingBottom) || 0;
+      return resolveMobileComposerReservedSpace({
+        scrollContentBottom: contentRect.bottom - contentPaddingBottom,
+        composerTop: wrapRect.top,
+        gap
+      });
+    }
+
+    const wrapHeight = Math.round(wrapRect?.height ?? 0);
     if (wrapHeight > 0) {
-      return wrapHeight + this.options.desktopBottomMessageGap;
+      return wrapHeight + gap;
     }
 
     return this.lastComposerHeight > 0
       ? this.lastComposerHeight + 32
-      : this.options.desktopBottomMessageGap;
+      : gap;
   }
 
   private getDesktopOverlayReservedSpace(): number {
@@ -540,25 +661,6 @@ export class ChatViewMobileComposer {
     return this.lastComposerHeight > 0
       ? this.lastComposerHeight + 24
       : this.options.desktopBottomMessageGap;
-  }
-
-  private getMobileRestingReservedSpace(): number {
-    if (!this.shouldReserveMobileRestingComposerSpace()) {
-      return 0;
-    }
-
-    return this.getMobileOverlayReservedSpace();
-  }
-
-  private shouldReserveMobileRestingComposerSpace(): boolean {
-    if (!this.options.isPhoneLayout() || !this.options.isMobileRuntime()) {
-      return false;
-    }
-
-    const contentEl = this.options.getContentEl();
-    const overflowWithoutCurrentSpacer =
-      contentEl.scrollHeight - contentEl.clientHeight - this.lastReservedSpace;
-    return overflowWithoutCurrentSpacer > 24;
   }
 
   private scheduleComposerScrollRestore(scrollTop: number): void {

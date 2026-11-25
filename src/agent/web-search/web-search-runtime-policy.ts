@@ -1,6 +1,4 @@
 const INTERNAL_PROCESS_TEXT_PATTERN = /[`]|sidet-|协议|系统规则|内部协议|联网能力|web_search|query\d*|pick\d*|reasoning/i;
-const MALFORMED_SEARCH_BLOCK_PATTERN = /```sidet-search/i;
-const MALFORMED_WEB_PROTOCOL_ATTEMPT_PATTERN = /(?:^|\n)\s*(?:```)?sidet-(?:search|fetch|direct)\b/i;
 const SEARCH_REQUEST_FILLER_PATTERNS: RegExp[] = [
   /我想知道/gi,
   /我想了解/gi,
@@ -311,18 +309,6 @@ export function pickVisibleProcessNote(note: string | null | undefined): string 
   const collapsed = trimmed.replace(/\s+/g, " ");
   const shortened = collapsed.length > 160 ? `${collapsed.slice(0, 160).trimEnd()}…` : collapsed;
   return ensureSentenceEnding(shortened);
-}
-
-export function shouldRecoverMalformedSearchRouting(routingReplyContent: string): boolean {
-  return MALFORMED_SEARCH_BLOCK_PATTERN.test(routingReplyContent) || isMalformedWebSearchProtocolReply(routingReplyContent);
-}
-
-export function isMalformedWebSearchProtocolReply(replyContent: string): boolean {
-  const trimmed = replyContent.trim();
-  if (!trimmed) {
-    return false;
-  }
-  return MALFORMED_WEB_PROTOCOL_ATTEMPT_PATTERN.test(trimmed);
 }
 
 export function buildFallbackSearchQueries(originalQuery: string): string[] {

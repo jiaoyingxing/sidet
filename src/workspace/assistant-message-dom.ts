@@ -8,6 +8,9 @@
 
 const MESSAGE_CONTENT_SELECTOR = ".sidet-message-content";
 const INLINE_ACTION_SELECTOR = ".sidet-agent-inline-action, .sidet-wiki-plan-followup";
+const ANSWER_SOURCES_SELECTOR = ".sidet-answer-sources";
+const ANSWER_VERSIONS_SELECTOR = ".sidet-answer-versions";
+const ANSWER_ACTIONS_SELECTOR = ".sidet-answer-actions, .sidet-answer-error";
 const STATUS_LINE_SELECTOR = ".sidet-message-status-line";
 const META_PANEL_SELECTOR = ".sidet-message-meta-panel";
 const META_PANEL_ICON_SELECTOR = ".sidet-message-meta-panel-icon";
@@ -29,6 +32,18 @@ export function findAssistantMessageContent(root: ParentNode): Element | null {
 
 export function findAssistantInlineActions(root: ParentNode): Element[] {
   return Array.from(root.querySelectorAll(INLINE_ACTION_SELECTOR));
+}
+
+export function findAssistantAnswerSources(root: ParentNode): Element[] {
+  return Array.from(root.querySelectorAll(ANSWER_SOURCES_SELECTOR));
+}
+
+export function findAssistantAnswerVersions(root: ParentNode): Element[] {
+  return Array.from(root.querySelectorAll(ANSWER_VERSIONS_SELECTOR));
+}
+
+export function findAssistantAnswerActions(root: ParentNode): Element[] {
+  return Array.from(root.querySelectorAll(ANSWER_ACTIONS_SELECTOR));
 }
 
 export function findAssistantStatusLines(root: ParentNode): Element[] {

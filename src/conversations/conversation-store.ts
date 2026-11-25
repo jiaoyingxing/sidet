@@ -3,10 +3,17 @@ import { SimpleListeners } from "../shared/events";
 import { makeId } from "../shared/paths";
 import { now } from "../shared/time";
 import type {
+  ConversationContextSummary,
   ConversationFolderRecord,
   ConversationRecord,
-  MessageRecord
+  MessageRecord,
+  MessageSource
 } from "../types";
+import {
+  searchConversationMessages,
+  type ConversationMessageSearchHit,
+  type ConversationMessageSearchOptions
+} from "./conversation-search";
 import { ConversationFiles } from "./conversation-files";
 import {
   buildFolderSummaries,
@@ -172,6 +179,19 @@ export class ConversationStore {
       .filter((conversation) => !conversation.isArchived)
       .filter((conversation) => (conversation.folderId ?? null) === folderId)
       .map((conversation) => toConversationSummary(conversation));
+  }
+
+  searchMessageContent(
+    query: string,
+    options: ConversationMessageSearchOptions = {}
+  ): ConversationMessageSearchHit[] {
+    const folderNames = new Map(
+      Array.from(this.folders, ([folderId, folder]) => [folderId, folder.name] as const)
+    );
+    return searchConversationMessages(this.conversations.values(), query, {
+      ...options,
+      folderNames
+    });
   }
 
   getStreamingConversationId(): string | null {
@@ -467,7 +487,7 @@ export class ConversationStore {
 
   async beginAssistantMessage(
     conversationId: string,
-    options: { reasoningLabel?: string } = {}
+    options: { reasoningLabel?: string; variantOfMessageId?: string } = {}
   ): Promise<MessageRecord> {
     await this.ensureLoaded();
     return this.messageRuntime.beginAssistantMessage(conversationId, options);
@@ -504,6 +524,18 @@ export class ConversationStore {
     this.messageRuntime.replaceAssistantMetaPanelSources(conversationId, messageId, panel, sources);
   }
 
+  setAssistantSources(conversationId: string, messageId: string, sources: MessageSource[]): void {
+    this.messageRuntime.setAssistantSources(conversationId, messageId, sources);
+  }
+
+  async setConversationContextSummary(
+    conversationId: string,
+    summary: ConversationContextSummary | null
+  ): Promise<void> {
+    await this.ensureLoaded();
+    await this.messageRuntime.setContextSummary(conversationId, summary);
+  }
+
   async finishAssistantMessage(conversationId: string, messageId: string): Promise<void> {
     await this.ensureLoaded();
     await this.messageRuntime.finishAssistantMessage(conversationId, messageId);
@@ -512,6 +544,11 @@ export class ConversationStore {
   async failAssistantMessage(conversationId: string, messageId: string, errorText: string): Promise<void> {
     await this.ensureLoaded();
     await this.messageRuntime.failAssistantMessage(conversationId, messageId, errorText);
+  }
+
+  async selectAnswerVariant(conversationId: string, messageId: string, index: number): Promise<void> {
+    await this.ensureLoaded();
+    await this.messageRuntime.selectAnswerVariant(conversationId, messageId, index);
   }
 
   async removeMessage(conversationId: string, messageId: string): Promise<void> {

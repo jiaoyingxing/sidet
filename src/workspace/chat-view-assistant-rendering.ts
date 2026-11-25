@@ -2,9 +2,12 @@ import { App, Component, MarkdownRenderer, setIcon } from "obsidian";
 import { stripSidetToolActionBlock } from "../agent/actions/agent-tool-protocol";
 import { stripSidetProtocolBlocks } from "../agent/web-search/sidet-protocol";
 import { parseWebSearchImportLink } from "../context/web-search-service";
-import type { ConversationRecord, MessageMetaPanel, MessageRecord } from "../types";
+import type { ConversationRecord, MessageMetaPanel, MessageRecord, MessageSource } from "../types";
+import { recordChatRenderTrace } from "./chat-view-render-trace";
 import { recordChatScrollTrace } from "./chat-scroll-trace";
 import {
+  findAssistantAnswerActions,
+  findAssistantAnswerVersions,
   findAssistantInlineActions,
   findAssistantLinks,
   findAssistantMessageContent,
@@ -12,6 +15,23 @@ import {
   findAssistantMetaPanelParts,
   findAssistantStatusLines
 } from "./assistant-message-dom";
+import { decorateCitationMarkers } from "./chat-view-citation-dom";
+import { hasPartialErrorContent } from "./chat-view-answer-presentation";
+import {
+  buildMetaPanelSignature,
+  buildMetaPanelTextSignature,
+  isElementVerticallyVisible,
+  shouldFlushStreamingMarkdown,
+  shouldRenderMetaPanelBody,
+  shouldUpdateMetaPanelPreview,
+  STREAMING_MARKDOWN_MIN_CHARS,
+  STREAMING_MARKDOWN_MIN_INTERVAL_MS
+} from "./chat-view-render-policy";
+import type { AnswerSourceTarget } from "./chat-view-source-modal";
+
+function nowMs(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
 
 export interface PendingStreamingMarkdownRender {
   contentEl: HTMLDivElement;
@@ -27,6 +47,8 @@ interface RenderAssistantMarkdownOptions {
   requireStreaming?: boolean;
   staged?: boolean;
   managedScrollRestore?: boolean;
+  streaming?: boolean;
+  sources?: MessageSource[];
 }
 
 interface ChatViewAssistantRenderingOptions {
@@ -58,7 +80,14 @@ interface ChatViewAssistantRenderingOptions {
     conversation: ConversationRecord,
     message: MessageRecord
   ) => void;
+  renderAnswerSources: (parentEl: HTMLElement, message: MessageRecord) => void;
+  renderAnswerActions: (
+    parentEl: HTMLElement,
+    conversation: ConversationRecord,
+    message: MessageRecord
+  ) => void;
   importWebSearchResultUrl: (url: string) => void;
+  openSourceModal: (target: AnswerSourceTarget) => void;
 }
 
 interface RenderedStatusLine {
@@ -127,6 +156,21 @@ export class ChatViewAssistantRendering {
   private bottomFollowFrame: number | null = null;
   private bottomFollowProgrammaticScrollTop: number | null = null;
   private bottomAnchorRequestVersion = 0;
+  private lastStreamingMarkdownLength = 0;
+  private strippedTextCache: {
+    messageId: string;
+    textLength: number;
+    variantIndex: number;
+    status: MessageRecord["status"];
+    text: string;
+  } | null = null;
+  private readonly metaPanelStates = new WeakMap<HTMLDetailsElement, {
+    panel: RenderedMetaPanelBlock;
+    signature: string;
+    lastPreviewAt: number;
+    lastBodyAt: number;
+    bodyStale: boolean;
+  }>();
 
   constructor(private readonly options: ChatViewAssistantRenderingOptions) {}
 
@@ -135,6 +179,7 @@ export class ChatViewAssistantRendering {
     this.cancelBottomFollow();
     this.resetStreamingMarkdownRenderer();
     this.bottomFollowProgrammaticScrollTop = null;
+    this.strippedTextCache = null;
   }
 
   handleScroll(scrollTop: number): boolean {
@@ -168,12 +213,20 @@ export class ChatViewAssistantRendering {
     state: {
       lastConversationId: string | null;
       lastMessageRevision: string | null;
-      pendingScrollIntent: "none" | "after-send" | "conversation-switch-or-initial-open";
+      pendingScrollIntent: "none" | "after-send" | "conversation-switch-or-initial-open" | "reveal-message";
     },
     callbacks: {
       clearPendingScrollIntent: () => void;
     }
   ): { lastConversationId: string | null; lastMessageRevision: string | null } {
+    if (state.pendingScrollIntent === "reveal-message") {
+      callbacks.clearPendingScrollIntent();
+      return {
+        lastConversationId: conversationId,
+        lastMessageRevision: messageRevision
+      };
+    }
+
     const isConversationChanged = conversationId !== state.lastConversationId;
     const isMessageChanged = messageRevision !== state.lastMessageRevision;
     const shouldScrollForSend =
@@ -326,6 +379,9 @@ export class ChatViewAssistantRendering {
   }
 
   setPendingAssistantPlaceholder(contentEl: HTMLDivElement): void {
+    if (contentEl.classList.contains("is-pending-reply") && contentEl.querySelector(".sidet-pending-reply-dots")) {
+      return;
+    }
     contentEl.empty();
     contentEl.removeClass("-plain");
     contentEl.addClass("markdown-rendered");
@@ -366,6 +422,7 @@ export class ChatViewAssistantRendering {
       this.streamingMarkdownRenderTimer = null;
     }
     this.lastStreamingMarkdownRenderAt = 0;
+    this.lastStreamingMarkdownLength = 0;
     this.streamingMarkdownRenderComponent?.unload();
     this.streamingMarkdownRenderComponent = null;
   }
@@ -384,12 +441,15 @@ export class ChatViewAssistantRendering {
       return false;
     }
 
-    if (messagesListEl.childElementCount !== conversation.messages.length) {
+    const lastMessage = conversation.messages[conversation.messages.length - 1];
+    if (!lastMessage || lastMessage.role !== "assistant") {
       return false;
     }
 
-    const lastMessage = conversation.messages[conversation.messages.length - 1];
-    if (!lastMessage || lastMessage.role !== "assistant") {
+    // 编辑态可能隐藏了更早的消息；以最后一条消息的 DOM 身份判断补丁面，
+    // 不再要求子节点数与消息总数一致。
+    const lastItemEl = messagesListEl.lastElementChild;
+    if (!lastItemEl || lastItemEl.getAttribute("data-message-id") !== lastMessage.id) {
       return false;
     }
 
@@ -401,6 +461,7 @@ export class ChatViewAssistantRendering {
   }
 
   patchLatestAssistantMessage(): boolean {
+    const patchStartedAt = nowMs();
     const conversation = this.options.getConversationForCurrentLeaf();
     const messagesListEl = this.options.getMessagesListEl();
     if (!conversation || !this.canPatchLatestAssistantMessage(conversation) || !messagesListEl) {
@@ -412,16 +473,26 @@ export class ChatViewAssistantRendering {
     if (!(lastItemEl instanceof HTMLDivElement)) {
       return false;
     }
+    if (lastItemEl.getAttribute("data-message-id") !== lastMessage.id) {
+      return false;
+    }
 
     const contentEl = findAssistantMessageContent(lastItemEl);
     if (!(contentEl instanceof HTMLDivElement)) {
       return false;
     }
 
-    const displayText = stripSidetToolActionBlock(stripSidetProtocolBlocks(lastMessage.text));
-    lastItemEl.classList.remove("-user", "-error");
+    const displayText = this.getAssistantDisplayText(lastMessage);
+    lastItemEl.classList.remove("-user");
     lastItemEl.classList.add("-assistant");
+    lastItemEl.classList.toggle("-error", lastMessage.status === "error");
     findAssistantInlineActions(lastItemEl).forEach((element) => {
+      element.remove();
+    });
+    findAssistantAnswerVersions(lastItemEl).forEach((element) => {
+      element.remove();
+    });
+    findAssistantAnswerActions(lastItemEl).forEach((element) => {
       element.remove();
     });
 
@@ -451,7 +522,8 @@ export class ChatViewAssistantRendering {
       void this.renderAssistantMarkdown(contentEl, displayText, renderComponent, {
         conversationId: conversation.id,
         renderGeneration: this.options.getMarkdownRenderGeneration(),
-        messageId: lastMessage.id
+        messageId: lastMessage.id,
+        sources: lastMessage.sources
       });
     } else if (!nextText) {
       contentEl.removeClass("is-pending-reply");
@@ -463,8 +535,17 @@ export class ChatViewAssistantRendering {
       this.options.setPlainMessageContent(contentEl, nextText);
     }
 
+    this.options.renderAnswerSources(lastItemEl, lastMessage);
     this.options.renderWikiMaintenancePlanAction(lastItemEl, conversation, lastMessage);
     this.options.renderInlineToolAction(lastItemEl, conversation, lastMessage);
+    this.options.renderAnswerActions(lastItemEl, conversation, lastMessage);
+    recordChatRenderTrace("assistant-patch", {
+      durationMs: Math.round((nowMs() - patchStartedAt) * 10) / 10,
+      messageId: lastMessage.id,
+      streaming: isStreaming,
+      markdownLength: displayText.length,
+      metaPanelCount: lastMessage.metaPanels?.length ?? 0
+    });
     this.options.setLastRenderedMessageCount(conversation.messages.length);
     this.options.setLastMessageRevision(this.options.buildMessageRevision(conversation));
     this.options.syncComposerButtons();
@@ -478,8 +559,32 @@ export class ChatViewAssistantRendering {
     return true;
   }
 
+  private getAssistantDisplayText(message: MessageRecord): string {
+    if (
+      this.strippedTextCache
+      && this.strippedTextCache.messageId === message.id
+      && this.strippedTextCache.textLength === message.text.length
+      && this.strippedTextCache.variantIndex === (message.activeAnswerVariantIndex ?? 0)
+      && this.strippedTextCache.status === message.status
+    ) {
+      return this.strippedTextCache.text;
+    }
+    const text = stripSidetToolActionBlock(stripSidetProtocolBlocks(message.text));
+    this.strippedTextCache = {
+      messageId: message.id,
+      textLength: message.text.length,
+      variantIndex: message.activeAnswerVariantIndex ?? 0,
+      status: message.status,
+      text
+    };
+    return text;
+  }
+
   shouldRenderAssistantMarkdown(message: MessageRecord): boolean {
-    return message.role === "assistant" && message.status !== "error" && Boolean(message.text.trim());
+    if (message.role !== "assistant" || !message.text.trim()) {
+      return false;
+    }
+    return message.status === "done" || (message.status === "error" && hasPartialErrorContent(message));
   }
 
   async renderAssistantMarkdown(
@@ -488,6 +593,7 @@ export class ChatViewAssistantRendering {
     renderComponent: Component,
     options: RenderAssistantMarkdownOptions
   ): Promise<void> {
+    const renderStartedAt = nowMs();
     const scrollHost = this.options.getScrollHost();
     const preservedScrollTop = scrollHost.scrollTop;
     const wasPinnedToBottom = this.options.getScrollPinnedToBottom();
@@ -519,13 +625,35 @@ export class ChatViewAssistantRendering {
           this.options.getApp().workspace.getActiveFile()?.path ?? "",
           renderComponent
         );
-        this.hydrateSpecialLinks(renderTarget);
+        // 流式阶段只保留正文；链接解析与角标装饰留到 done 的最终渲染，
+        // 避免每次 flush 都遍历整棵树。
+        if (!options.streaming) {
+          this.hydrateSpecialLinks(renderTarget);
+          decorateCitationMarkers(
+            renderTarget,
+            options.sources ?? [],
+            (target) => this.options.openSourceModal(target)
+          );
+        }
       }
     } catch (error) {
+      recordChatRenderTrace("assistant-markdown-error", {
+        durationMs: Math.round((nowMs() - renderStartedAt) * 10) / 10,
+        markdownLength: markdown.length,
+        streaming: Boolean(options.streaming)
+      });
       console.error("Sidet：渲染 AI Markdown 失败", error);
       this.options.setPlainMessageContent(contentEl, markdown);
       return;
     }
+
+    recordChatRenderTrace("assistant-markdown", {
+      durationMs: Math.round((nowMs() - renderStartedAt) * 10) / 10,
+      markdownLength: markdown.length,
+      streaming: Boolean(options.streaming),
+      staged: Boolean(options.staged),
+      sourceCount: options.sources?.length ?? 0
+    });
 
     if (
       options.renderGeneration !== this.options.getMarkdownRenderGeneration() ||
@@ -602,6 +730,13 @@ export class ChatViewAssistantRendering {
     });
   }
 
+  /** 用户把流式消息滚回视口时补一次刷新；离屏期间跳过的 Markdown 不再等待下一块 chunk。 */
+  refreshStreamingMarkdownAfterScroll(): void {
+    if (this.pendingStreamingMarkdownRender) {
+      this.scheduleStreamingMarkdownRender(this.pendingStreamingMarkdownRender);
+    }
+  }
+
   private scheduleStreamingMarkdownRender(render: PendingStreamingMarkdownRender): void {
     this.pendingStreamingMarkdownRender = render;
     if (this.streamingMarkdownRenderInFlight || this.streamingMarkdownRenderTimer !== null) {
@@ -609,7 +744,19 @@ export class ChatViewAssistantRendering {
     }
 
     const elapsed = Date.now() - this.lastStreamingMarkdownRenderAt;
-    const delay = Math.max(0, 140 - elapsed);
+    const growth = render.markdown.length - this.lastStreamingMarkdownLength;
+    if (!shouldFlushStreamingMarkdown({
+      charsSinceLastFlush: growth,
+      elapsedMs: elapsed,
+      visible: this.isMessageVisible(render.contentEl),
+      pinnedToBottom: this.options.getScrollPinnedToBottom()
+    })) {
+      return;
+    }
+
+    const delay = growth >= STREAMING_MARKDOWN_MIN_CHARS
+      ? 0
+      : Math.max(0, STREAMING_MARKDOWN_MIN_INTERVAL_MS - elapsed);
     this.streamingMarkdownRenderTimer = window.setTimeout(() => {
       this.streamingMarkdownRenderTimer = null;
       this.streamingMarkdownRenderInFlight = true;
@@ -617,6 +764,18 @@ export class ChatViewAssistantRendering {
         void this.flushStreamingMarkdownRender();
       });
     }, delay);
+  }
+
+  private isMessageVisible(contentEl: HTMLElement): boolean {
+    const host = this.options.getScrollHost();
+    const itemRect = contentEl.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    return isElementVerticallyVisible({
+      itemTop: itemRect.top,
+      itemBottom: itemRect.bottom,
+      hostTop: hostRect.top,
+      hostBottom: hostRect.bottom
+    });
   }
 
   private async flushStreamingMarkdownRender(): Promise<void> {
@@ -628,6 +787,7 @@ export class ChatViewAssistantRendering {
 
     this.pendingStreamingMarkdownRender = null;
     this.lastStreamingMarkdownRenderAt = Date.now();
+    this.lastStreamingMarkdownLength = render.markdown.length;
     const currentConversationId = this.options.getCurrentConversationId();
     const currentConversation = currentConversationId
       ? this.options.getConversationById(currentConversationId)
@@ -657,7 +817,9 @@ export class ChatViewAssistantRendering {
       renderGeneration: this.options.getMarkdownRenderGeneration(),
       messageId: render.messageId,
       requireStreaming: true,
-      staged: true
+      staged: true,
+      streaming: true,
+      sources: currentLastMessage.sources
     });
 
     if (this.pendingStreamingMarkdownRender) {
@@ -748,6 +910,11 @@ export class ChatViewAssistantRendering {
       }
     });
 
+    const streaming = message.status === "streaming";
+    const now = Date.now();
+    const syncStartedAt = nowMs();
+    let bodyBuildCount = 0;
+    let previewUpdateCount = 0;
     for (const panel of nextPanels) {
       let detailsEl = panelByKind.get(panel.kind);
       let shouldBuildContent = false;
@@ -788,22 +955,89 @@ export class ChatViewAssistantRendering {
         detailsEl.createDiv({
           cls: "sidet-message-meta-panel-body"
         });
+        detailsEl.addEventListener("toggle", () => {
+          if (!detailsEl.open) {
+            return;
+          }
+          const current = this.metaPanelStates.get(detailsEl);
+          const parts = findAssistantMetaPanelParts(detailsEl);
+          if (!current || !(parts.bodyEl instanceof HTMLElement)) {
+            return;
+          }
+          this.renderMetaPanelBody(parts.bodyEl, current.panel);
+          current.lastBodyAt = Date.now();
+          current.bodyStale = false;
+        });
       }
 
       const panelParts = findAssistantMetaPanelParts(detailsEl);
-      if (panelParts.labelEl instanceof HTMLElement) {
+      const panelTextSignature = buildMetaPanelTextSignature(panel.text, streaming);
+      const sectionSignatures = panel.sections?.map((section) => ({
+        label: section.label,
+        textSignature: buildMetaPanelTextSignature(section.text, streaming),
+        sourceCount: section.sources?.length ?? 0
+      }));
+      const signature = buildMetaPanelSignature({
+        label: panel.label,
+        textSignature: panelTextSignature,
+        sections: sectionSignatures,
+        sources: panel.sources?.map((source) => ({
+          title: source.title,
+          url: source.url
+        }))
+      });
+      let panelState = this.metaPanelStates.get(detailsEl);
+      if (!panelState) {
+        panelState = {
+          panel,
+          signature: "",
+          lastPreviewAt: 0,
+          lastBodyAt: 0,
+          bodyStale: true
+        };
+        this.metaPanelStates.set(detailsEl, panelState);
+      }
+      panelState.panel = panel;
+      const signatureChanged = signature !== panelState.signature;
+
+      if (panelParts.labelEl instanceof HTMLElement && panelParts.labelEl.textContent !== panel.label) {
         panelParts.labelEl.textContent = panel.label;
       }
 
-      if (panelParts.previewEl instanceof HTMLElement) {
+      if (
+        panelParts.previewEl instanceof HTMLElement
+        && shouldUpdateMetaPanelPreview({
+          signatureChanged,
+          elapsedMs: now - panelState.lastPreviewAt,
+          streaming
+        })
+      ) {
         const nextPreviewText = this.getMetaPanelPreviewText(panel, panelParts.previewEl.textContent ?? "");
         if (nextPreviewText !== null) {
           panelParts.previewEl.textContent = nextPreviewText;
         }
+        panelState.lastPreviewAt = now;
+        previewUpdateCount += 1;
       }
 
-      if (panelParts.bodyEl instanceof HTMLElement) {
+      if (signatureChanged) {
+        panelState.signature = signature;
+        panelState.bodyStale = true;
+      }
+
+      if (
+        panelParts.bodyEl instanceof HTMLElement
+        && shouldRenderMetaPanelBody({
+          signatureChanged: panelState.bodyStale,
+          open: detailsEl.open,
+          elapsedMs: now - panelState.lastBodyAt,
+          streaming
+        })
+      ) {
         this.renderMetaPanelBody(panelParts.bodyEl, panel);
+        panelState.lastBodyAt = now;
+        panelState.bodyStale = false;
+        bodyBuildCount += 1;
       }
 
       if (detailsEl.nextElementSibling !== contentEl) {
@@ -812,6 +1046,13 @@ export class ChatViewAssistantRendering {
     }
 
     panelByKind.forEach((panelEl) => panelEl.remove());
+    recordChatRenderTrace("meta-panels", {
+      durationMs: Math.round((nowMs() - syncStartedAt) * 10) / 10,
+      panelCount: nextPanels.length,
+      bodyBuildCount,
+      previewUpdateCount,
+      streaming
+    });
   }
 
   private getMetaPanelPreviewText(panel: RenderedMetaPanelBlock, previousPreview: string): string | null {

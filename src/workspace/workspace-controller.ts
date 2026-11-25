@@ -3,15 +3,27 @@ import {
   ALL_KNOWLEDGE_BASES_DISPLAY_NAME,
   ALL_KNOWLEDGE_BASES_SELECTION,
   CHAT_VIEW_ICON,
-  CHAT_VIEW_TYPE
+  CHAT_VIEW_TYPE,
+  MAX_AGENT_TOOL_RESULT_CHARS,
+  MAX_AGENT_TOOL_ROUNDS,
+  PROVIDER_CONTEXT_CHARS_PER_TOKEN,
+  PROVIDER_IMAGE_CONTEXT_COST_CHARS,
+  PROVIDER_RESPONSE_RESERVE_TOKENS
 } from "../constants";
+import {
+  estimateProviderMessageChars,
+  resolveModelContextWindowTokens
+} from "../conversations/conversation-context-budget";
 import { ActiveContextService } from "../context/active-context";
+import { resolveRegenerateAnswerTarget } from "./chat-view-answer-presentation";
 import {
   WebSearchService,
   type WebSearchResult
 } from "../context/web-search-service";
 import { WebpageContextService } from "../context/webpage-context";
 import { AgentActionPreviewService } from "../agent/actions/agent-action-preview";
+import { runAgentToolLoop } from "../agent/tools/agent-tool-loop";
+import { VaultToolService } from "../agent/tools/vault-tool-service";
 import {
   buildSidetFileToolContext,
   buildSidetFileToolSummaryContext
@@ -21,26 +33,31 @@ import {
   joinSidetRequestContexts,
   resolveSidetFileToolPromptMode
 } from "../agent/prompts/base-request-context";
-import {
-  buildFallbackSearchQueries,
-  isMalformedWebSearchProtocolReply,
-  normalizeSearchQueries,
-  pickVisibleProcessNote
-} from "../agent/web-search/web-search-runtime-policy";
+import { pickVisibleProcessNote } from "../agent/web-search/web-search-runtime-policy";
 import { createDisplayableAnswerStreamer } from "../agent/web-search/displayable-answer-stream";
 import {
-  buildSidetWebSearchContinuationRepairContext,
-  buildSidetWebSearchFinalAnswerContext,
-  buildSidetWebSearchFinalAnswerRepairContext,
-  buildSidetWebSearchRoutingContext,
-  buildSidetWebSearchRoutingRepairContext,
-  buildSidetSearchResultBlock,
-  buildSidetWebContextBlock,
-  buildSidetWebSearchInstructionContext,
-  parseSidetFetchBlock,
-  parseSidetSearchBlock,
+  buildSidetResearchDecisionContext,
+  buildSidetResearchEvidenceContext,
+  buildSidetResearchFinalAnswerContext,
+  buildSidetResearchFinalAnswerRepairContext,
+  buildSidetResearchQueryContext,
+  buildSidetResearchRepairContext
+} from "../agent/prompts/web-search-prompts";
+import {
+  parseSidetResearchBlock,
   stripSidetProtocolBlocks
 } from "../agent/web-search/sidet-protocol";
+import {
+  runWebResearchRound,
+  type ResearchBudget,
+  type ResearchPage,
+  type ResearchRoundProgress,
+  type ResearchRoundResult
+} from "../agent/web-search/research-agent";
+import {
+  runWebResearchLoop,
+  type ResearchLoopState
+} from "../agent/web-search/research-loop";
 import { VaultAgentService } from "../agent/vault-agent";
 import type { WikiKnowledgeBaseInfo } from "../agent/wiki/wiki-memory-index";
 import { MarkdownExportService } from "../export/markdown-export";
@@ -60,6 +77,7 @@ import {
   buildResolvedModelConfigMap
 } from "../settings/model-configs";
 import { ChatDraftIntake } from "./chat-draft-intake";
+import { createAgentToolStepPresenter } from "./agent-tool-step-presenter";
 import { createFreshChatLeafState } from "./chat-leaf-state";
 import { normalizeHomeCommandSourceLabel } from "./home-pinned-command";
 import {
@@ -88,11 +106,13 @@ import type {
   ChatLeafState,
   ChatLeafViewState,
   ChatLeafExternalImportRequest,
+  ChatLeafMessageRevealRequest,
   DialogPluginSettings,
   HomePinnedCommandSetting,
   MarkdownMessageAttachment,
   MessageAttachment,
   MessageRecord,
+  MessageSource,
   ModelConfigRecord,
   ResolvedModelConfig,
   WebpageMessageAttachment
@@ -101,6 +121,8 @@ import type {
 interface OpenConversationOptions {
   focusComposer?: boolean;
   forceActiveOnMobile?: boolean;
+  /** 打开后定位到指定消息；一次性请求，不写入持久化状态。 */
+  messageId?: string;
 }
 
 interface OpenBrowserViewOptions {
@@ -122,6 +144,8 @@ interface UriOpenChatOptions {
 interface SendMessageFromLeafOptions {
   requestContextPrefix?: string | null;
   replaceFromMessageId?: string | null;
+  /** 重新生成时保留旧回答：旧消息 id 作为新回答的一个历史版本。 */
+  variantOfMessageId?: string | null;
   selectedKnowledgeBaseIndexPathOverride?: string | null;
   webSearchEnabledOverride?: boolean;
   onReplacementCommit?: (() => void) | null;
@@ -136,13 +160,6 @@ export interface HomePinnedCommandInfo {
   sourceLabel: string;
   icon: string;
   available: boolean;
-}
-
-interface ModelDrivenWebSearchState {
-  round: number;
-  selectedQuery: string;
-  providerLabel: string;
-  results: WebSearchResult[];
 }
 
 const WEB_SEARCH_GROUP = "web-search";
@@ -165,6 +182,7 @@ export class WorkspaceController {
   private readonly conversationActions: WorkspaceConversationActions;
   private readonly nativeNewTabTakeover: WorkspaceNativeNewTabTakeover;
   private readonly draftIntake: ChatDraftIntake;
+  private readonly vaultToolService: VaultToolService;
 
   constructor(
     private readonly app: App,
@@ -197,6 +215,10 @@ export class WorkspaceController {
       runtime: this.chatLeafRuntime
     });
     this.nativeNewTabTakeover = new WorkspaceNativeNewTabTakeover(app, this.leafNavigation);
+    this.vaultToolService = new VaultToolService({
+      app,
+      queryWikiMemory: (query) => this.vaultAgent.searchWikiMemory(query)
+    });
     this.conversationActions = new WorkspaceConversationActions({
       controller: this,
       leafNavigation: this.leafNavigation,
@@ -317,6 +339,14 @@ export class WorkspaceController {
 
   clearExternalImportRequest(leaf: WorkspaceLeaf): void {
     this.chatLeafRuntime.clearExternalImportRequest(leaf);
+  }
+
+  queueMessageReveal(leaf: WorkspaceLeaf, request: ChatLeafMessageRevealRequest | null): void {
+    this.chatLeafRuntime.queueMessageReveal(leaf, request);
+  }
+
+  clearMessageReveal(leaf: WorkspaceLeaf): void {
+    this.chatLeafRuntime.clearMessageReveal(leaf);
   }
 
   getConversationForLeaf(leaf: WorkspaceLeaf) {
@@ -773,12 +803,17 @@ export class WorkspaceController {
           try {
             await this.runModelDrivenWebSearch(trimmed, requestContext, runtime);
           } catch (error) {
-            runtime.appendContent(this.buildWebSearchFailureMarkdown(trimmed, error));
+            // 用户停止时 provider 会抛 AbortError；这不是联网失败，不写失败说明。
+            if (!runtime.getAbortSignal().aborted) {
+              runtime.appendContent(this.buildWebSearchFailureMarkdown(trimmed, error));
+            }
             throw error;
           }
         },
         {
           replaceFromMessageId: options.replaceFromMessageId,
+          variantOfMessageId: options.variantOfMessageId,
+          requestContextChars: requestContext?.length ?? 0,
           onReplacementCommit: options.onReplacementCommit
         }
       );
@@ -787,16 +822,61 @@ export class WorkspaceController {
     if (options.replaceFromMessageId) {
       await this.stopStreamingAndWait();
     }
-    await this.session.send(conversationId, modelConfig, trimmed, attachments, {
-      requestContext,
-      replaceFromMessageId: options.replaceFromMessageId,
-      knowledgeBaseRouting: preSendContext.knowledgeBaseRouting,
-      onReplacementCommit: options.onReplacementCommit
-    });
+    await this.session.sendLocalAssistantTask(
+      conversationId,
+      modelConfig,
+      trimmed,
+      attachments,
+      async (runtime) => {
+        const toolStepPresenter = createAgentToolStepPresenter({
+          appendPanelText: (panel, chunk) => runtime.appendMetaPanelText(panel, chunk),
+          appendVisibleContent: (chunk) => runtime.appendContent(chunk)
+        });
+        const baseMessages = runtime.buildRequestMessages(requestContext);
+        await runAgentToolLoop({
+          baseMessages,
+          createMessage: (role, messageText) => this.createEphemeralMessage(role, messageText),
+          callModel: (messages, callOptions) => runtime.streamModelReply(messages, {
+            webSearchMode: "off",
+            ...callOptions
+          }),
+          executeTool: (invocation) => this.vaultToolService.execute(invocation),
+          onVisibleContent: (chunk) => toolStepPresenter.appendVisibleContent(chunk),
+          onReasoning: (chunk) => runtime.appendReasoning(chunk),
+          onToolStep: (step) => toolStepPresenter.handleStep(step),
+          maxToolResultChars: this.resolveToolResultCharBudget(baseMessages, modelConfig),
+          signal: runtime.getAbortSignal()
+        });
+      },
+      {
+        replaceFromMessageId: options.replaceFromMessageId,
+        variantOfMessageId: options.variantOfMessageId,
+        requestContextChars: requestContext?.length ?? 0,
+        knowledgeBaseRouting: preSendContext.knowledgeBaseRouting,
+        onReplacementCommit: options.onReplacementCommit
+      }
+    );
+  }
+
+  private resolveToolResultCharBudget(
+    baseMessages: MessageRecord[],
+    modelConfig: ResolvedModelConfig
+  ): number {
+    const contextWindowTokens = resolveModelContextWindowTokens(modelConfig);
+    const requestBudgetChars = Math.floor(contextWindowTokens * PROVIDER_CONTEXT_CHARS_PER_TOKEN);
+    const baseChars = baseMessages.reduce((total, message) => {
+      return total + estimateProviderMessageChars(message, PROVIDER_IMAGE_CONTEXT_COST_CHARS);
+    }, 0);
+    const reservedChars = Math.floor(PROVIDER_RESPONSE_RESERVE_TOKENS * PROVIDER_CONTEXT_CHARS_PER_TOKEN);
+    const remainingChars = requestBudgetChars - baseChars - reservedChars;
+    return Math.max(
+      0,
+      Math.min(MAX_AGENT_TOOL_RESULT_CHARS * MAX_AGENT_TOOL_ROUNDS, remainingChars)
+    );
   }
 
   async insertCurrentNoteIntoDraft(targetLeaf?: WorkspaceLeaf): Promise<void> {
-    await this.draftIntake.insertCurrentNoteIntoDraft(targetLeaf);
+    return this.draftIntake.insertCurrentNoteIntoDraft(targetLeaf);
   }
 
   async insertCurrentSelectionIntoDraft(targetLeaf?: WorkspaceLeaf): Promise<void> {
@@ -865,6 +945,47 @@ export class WorkspaceController {
     userBoundary?: string
   ): Promise<void> {
     await this.conversationActions.generateWikiMaintenancePlanFromMarkdownFile(file, targetLeaf, userBoundary);
+  }
+
+  /**
+   * 重新生成最后一条回答：复用最后一条用户消息和附件，替换旧的一轮。
+   *
+   * 旧回答作为版本保留在新回答上；和现有「修改最后一条提问」使用同一条
+   * replaceFromMessageId 链。流式中或不是最后一条回答时拒绝。
+   */
+  async regenerateLatestAnswer(leaf: WorkspaceLeaf): Promise<void> {
+    await this.ensureConversationStoreReady();
+    const conversationId = this.getChatLeafState(leaf).conversationId;
+    if (!conversationId) {
+      throw new Error("当前没有可重新生成的对话。");
+    }
+    if (this.store.isConversationArchived(conversationId)) {
+      throw new Error("已归档对话需先恢复后才能重新生成。");
+    }
+    const conversation = this.store.getConversation(conversationId);
+    if (!conversation) {
+      throw new Error("当前对话不存在，无法重新生成。");
+    }
+    const target = resolveRegenerateAnswerTarget(conversation);
+    await this.sendMessageFromLeaf(
+      leaf,
+      target.userMessage.text,
+      target.userMessage.attachments ?? [],
+      {
+        replaceFromMessageId: target.userMessage.id,
+        variantOfMessageId: target.variantOfMessageId
+      }
+    );
+  }
+
+  async selectAnswerVariant(leaf: WorkspaceLeaf, messageId: string, index: number): Promise<void> {
+    await this.ensureConversationStoreReady();
+    const conversationId = this.getChatLeafState(leaf).conversationId;
+    if (!conversationId) {
+      throw new Error("当前没有可切换版本的对话。");
+    }
+    // 只切换已有版本的激活项，不新增消息；归档对话也可翻阅。
+    await this.store.selectAnswerVariant(conversationId, messageId, index);
   }
 
   async continueLatestWikiMaintenancePlan(targetLeaf?: WorkspaceLeaf): Promise<boolean> {
@@ -1066,400 +1187,244 @@ export class WorkspaceController {
     runtime: LocalAssistantTaskRuntime
   ): Promise<void> {
     const baseMessages = runtime.buildRequestMessages(requestContext);
-    const answerStepPanel = createWebStepPanel("web-step-answer", "过程说明");
-
-    let kickoffReply = await this.streamProtocolReply(
-      runtime,
-      [
-        this.createEphemeralMessage("system", buildSidetWebSearchRoutingContext()),
-        ...baseMessages
-      ],
-      {
-        parseSearch: true
-      }
-    );
-    let routeSearchInstruction = parseSidetSearchBlock(kickoffReply.contentText);
-
-    if (!routeSearchInstruction) {
-      const repairedKickoffReply = await this.streamProtocolReply(
+    await runWebResearchLoop({
+      initialQuestion: originalQuery,
+      baseMessages,
+      decisionContext: buildSidetResearchDecisionContext(),
+      createMessage: (role, text) => this.createEphemeralMessage(role, text),
+      callDecisionModel: (messages) => this.streamProtocolReply(runtime, messages, {
+        parseResearch: true
+      }),
+      callRepairModel: (messages) => this.streamProtocolReply(
         runtime,
         [
-          this.createEphemeralMessage("system", buildSidetWebSearchRoutingRepairContext()),
-          ...baseMessages,
-          this.createEphemeralMessage("assistant", kickoffReply.contentText || "（上一条没有按内部协议返回）")
+          this.createEphemeralMessage("system", buildSidetResearchRepairContext()),
+          ...messages
         ],
         {
-          parseSearch: true
+          parseResearch: true
         }
-      );
-      kickoffReply = repairedKickoffReply;
-      routeSearchInstruction = parseSidetSearchBlock(kickoffReply.contentText);
-    }
-    let latestSearchState: ModelDrivenWebSearchState | null = null;
-
-    if (!routeSearchInstruction) {
-      routeSearchInstruction = {
-        intent: "web_search",
-        round: 1,
-        queries: buildFallbackSearchQueries(originalQuery),
-        reason: null
-      };
-    }
-
-    const kickoffAssistantText = parseSidetSearchBlock(kickoffReply.contentText)
-      ? kickoffReply.contentText
-      : null;
-    let transcript: MessageRecord[] = [
-      this.createEphemeralMessage("system", buildSidetWebSearchInstructionContext()),
-      ...baseMessages,
-      ...(kickoffAssistantText ? [this.createEphemeralMessage("assistant", kickoffAssistantText)] : [])
-    ];
-
-    latestSearchState = await this.runSearchInstruction(
-      routeSearchInstruction.round ?? 1,
-      routeSearchInstruction.queries,
-      runtime,
-      routeSearchInstruction.reason
-    );
-    transcript = [
-      ...transcript,
-      this.createEphemeralMessage(
-        "user",
-        buildSidetSearchResultBlock(
-          latestSearchState.round,
-          latestSearchState.selectedQuery,
-          latestSearchState.providerLabel,
-          latestSearchState.results
-        )
-      )
-    ];
-
-    for (let step = 1; step <= 5; step += 1) {
-      const reply = await this.streamProtocolReply(
+      ),
+      runResearchRound: (round, question, budget, state, reason) => this.runResearchRound(
+        round,
+        question,
+        reason ?? null,
+        budget,
+        state,
         runtime,
-        transcript,
-        {
-          parseSearch: true,
-          parseFetch: true
-        }
-      );
-      const rawText = reply.contentText.trim();
-      const visibleReplyText = stripSidetProtocolBlocks(rawText).trim();
-      const searchInstruction = parseSidetSearchBlock(rawText);
-      const fetchInstruction = parseSidetFetchBlock(rawText);
-      const malformedProtocolAttempt = isMalformedWebSearchProtocolReply(rawText);
-
-      if (!searchInstruction && !fetchInstruction) {
-        if (visibleReplyText && !malformedProtocolAttempt) {
-          runtime.appendContent(visibleReplyText);
-          return;
-        }
-
-        transcript = [
-          ...transcript,
-          this.createEphemeralMessage("assistant", reply.contentText)
-        ];
-        const continuationReply = await this.repairWebSearchContinuation(
-          runtime,
-          transcript,
-          reply
-        );
-
-        const continuedSearchInstruction = parseSidetSearchBlock(continuationReply.contentText.trim());
-        const continuedFetchInstruction = parseSidetFetchBlock(continuationReply.contentText.trim());
-        const continuedVisibleReplyText = stripSidetProtocolBlocks(continuationReply.contentText).trim();
-        const continuedMalformedProtocolAttempt = isMalformedWebSearchProtocolReply(continuationReply.contentText);
-
-        if (!continuedSearchInstruction && !continuedFetchInstruction) {
-          if (continuedVisibleReplyText && !continuedMalformedProtocolAttempt) {
-            runtime.appendContent(continuedVisibleReplyText);
-            return;
-          }
-
-          await this.streamWebSearchFinalAnswer(
-            runtime,
-            transcript,
-            latestSearchState,
-            originalQuery,
-            continuationReply.contentText.trim() || reply.contentText.trim()
-          );
-          return;
-        }
-
-        transcript = [
-          ...transcript,
-          this.createEphemeralMessage("assistant", continuationReply.contentText)
-        ];
-
-        if (continuedSearchInstruction) {
-          latestSearchState = await this.runSearchInstruction(
-            continuedSearchInstruction.round ?? (latestSearchState?.round ?? step) + 1,
-            continuedSearchInstruction.queries,
-            runtime,
-            continuedSearchInstruction.reason
-          );
-          transcript = [
-            ...transcript,
-            this.createEphemeralMessage(
-              "user",
-              buildSidetSearchResultBlock(
-                latestSearchState.round,
-                latestSearchState.selectedQuery,
-                latestSearchState.providerLabel,
-                latestSearchState.results
-              )
-            )
-          ];
-          continue;
-        }
-
-        if (!continuedFetchInstruction) {
-          continue;
-        }
-
-        if (!latestSearchState) {
-          this.appendProcessStepDetail(
-            runtime,
-            answerStepPanel,
-            "模型尝试抓取网页，但当前没有可用的搜索结果可供继续处理。"
-          );
-          runtime.appendContent(this.buildWebSearchFailureMarkdown(originalQuery, new Error("当前没有可供抓取的搜索结果。")));
-          return;
-        }
-
-        const continuedFetchedSources = await this.runFetchInstruction(
-          continuedFetchInstruction.round ?? latestSearchState.round,
-          latestSearchState,
-          continuedFetchInstruction.picks,
-          runtime,
-          continuedFetchInstruction.reason
-        );
-        transcript = [
-          ...transcript,
-          this.createEphemeralMessage(
-            "user",
-            buildSidetWebContextBlock(
-              continuedFetchInstruction.round ?? latestSearchState.round,
-              continuedFetchedSources
-            )
-          )
-        ];
-        continue;
-      }
-
-      transcript = [
-        ...transcript,
-        this.createEphemeralMessage("assistant", reply.contentText)
-      ];
-
-      if (searchInstruction) {
-        latestSearchState = await this.runSearchInstruction(
-          searchInstruction.round ?? (latestSearchState?.round ?? step) + 1,
-          searchInstruction.queries,
-          runtime,
-          searchInstruction.reason
-        );
-        transcript = [
-          ...transcript,
-          this.createEphemeralMessage(
-            "user",
-            buildSidetSearchResultBlock(
-              latestSearchState.round,
-              latestSearchState.selectedQuery,
-              latestSearchState.providerLabel,
-              latestSearchState.results
-            )
-          )
-        ];
-        continue;
-      }
-
-      if (!fetchInstruction) {
-        continue;
-      }
-
-      if (!latestSearchState) {
-        this.appendProcessStepDetail(
-          runtime,
-          answerStepPanel,
-          "模型尝试抓取网页，但当前没有可用的搜索结果可供继续处理。"
-        );
-        runtime.appendContent(this.buildWebSearchFailureMarkdown(originalQuery, new Error("当前没有可供抓取的搜索结果。")));
-        return;
-      }
-
-      const fetchedSources = await this.runFetchInstruction(
-        fetchInstruction.round ?? latestSearchState.round,
-        latestSearchState,
-        fetchInstruction.picks,
+        baseMessages
+      ),
+      streamFinalAnswer: (messages, state) => this.streamWebSearchFinalAnswer(runtime, messages, {
+        originalQuery,
+        exhausted: state.exhausted,
+        pages: state.pages,
+        searchResults: state.lastSearchResults
+      }),
+      onVisibleContent: (text) => runtime.appendContent(text),
+      commitSources: (state) => this.commitWebSearchSources(
         runtime,
-        fetchInstruction.reason
-      );
-      transcript = [
-        ...transcript,
-        this.createEphemeralMessage(
-          "user",
-          buildSidetWebContextBlock(fetchInstruction.round ?? latestSearchState.round, fetchedSources)
-        )
-      ];
-    }
-
-    this.appendProcessStepDetail(
-      runtime,
-      answerStepPanel,
-      "这轮联网过程超过当前轮次预算，已停止继续扩展。"
-    );
-    runtime.appendContent(this.buildWebSearchFailureMarkdown(originalQuery, new Error("联网思考未能在当前轮次内完成。")));
-  }
-
-  private async runSearchInstruction(
-    round: number,
-    queries: string[],
-    runtime: LocalAssistantTaskRuntime,
-    reason?: string | null
-  ): Promise<ModelDrivenWebSearchState> {
-    const candidates = normalizeSearchQueries(queries, {
-      limit: 3
+        state.pages,
+        state.lastSearchResults
+      ),
+      signal: runtime.getAbortSignal(),
+      now: Date.now
     });
-    if (candidates.length === 0) {
-      throw new Error("模型没有提供可执行的搜索词。");
-    }
-
-    const stepPanel = createWebStepPanel(`web-step-search-${round}`, round > 1 ? `网页搜索 ${round}` : "网页搜索");
-
-    let lastState: ModelDrivenWebSearchState | null = null;
-    let lastError: unknown = null;
-    for (let index = 0; index < candidates.length; index += 1) {
-      const query = candidates[index];
-      try {
-        const payload = await this.webSearch.search(query, {
-          onProgress: (event) => {
-            this.appendProcessStepDetail(runtime, stepPanel, event.message);
-          }
-        });
-        lastState = {
-          round,
-          selectedQuery: query,
-          providerLabel: payload.providerLabel,
-          results: payload.results
-        };
-        if (payload.results.length > 0) {
-          this.appendProcessStepDetail(
-            runtime,
-            stepPanel,
-            [
-              this.resolveProcessDetail(reason),
-              `搜索词：${query}`,
-              `搜索源：${payload.providerLabel}`,
-              `命中结果：${payload.results.length} 条`
-            ].filter(Boolean).join("\n")
-          );
-          runtime.setMetaPanelSources(stepPanel, payload.results.map((result, index) => ({
-            title: `${index + 1}. ${result.title}`,
-            url: result.url
-          })));
-          return lastState;
-        }
-      } catch (error) {
-        lastError = error;
-      }
-    }
-
-    if (lastState) {
-      return lastState;
-    }
-
-    throw lastError instanceof Error ? lastError : new Error("联网搜索失败。");
   }
 
-  private async runFetchInstruction(
+  private async runResearchRound(
     round: number,
-    searchState: ModelDrivenWebSearchState,
-    picks: number[],
+    question: string,
+    reason: string | null,
+    budget: ResearchBudget,
+    state: ResearchLoopState,
     runtime: LocalAssistantTaskRuntime,
-    reason?: string | null
-  ): Promise<Array<Pick<WebpageMessageAttachment, "name" | "url" | "content"> & { snippet?: string }>> {
-    const selectedEntries = picks
-      .slice(0, 3)
-      .map((pick) => ({ pick, result: searchState.results[pick - 1] ?? null }))
-      .filter((item) => item.result !== null);
-    if (selectedEntries.length === 0) {
-      throw new Error("模型没有选中可抓取的搜索结果。");
-    }
-
-    const stepPanel = createWebStepPanel(`web-step-fetch-${round}`, "网页抓取");
-
-    const sources: Array<Pick<WebpageMessageAttachment, "name" | "url" | "content"> & { snippet?: string }> = [];
-    for (const entry of selectedEntries) {
-      const result = entry.result;
-      try {
-        const attachment = await this.buildWebpageAttachment(result.url);
-        sources.push({
-          name: attachment.name,
-          url: attachment.url,
-          content: attachment.content,
-          snippet: result.snippet
-        });
-      } catch (error) {
-        console.warn("Sidet：网页抓取失败。", error);
-      }
-    }
-
-    if (sources.length === 0) {
-      throw new Error("网页抓取失败，当前没有可带入的正文内容。");
-    }
-
-    this.appendProcessStepDetail(
-      runtime,
-      stepPanel,
-      [
-        this.resolveProcessDetail(reason),
-        `从 ${searchState.providerLabel} 的搜索结果中抓取 ${sources.length} 个网页正文。`
-      ].filter(Boolean).join("\n")
+    baseMessages: MessageRecord[]
+  ): Promise<ResearchRoundResult> {
+    const stepPanel = createWebStepPanel(
+      `web-step-research-${round}`,
+      round > 1 ? `研究 ${round}` : "研究"
     );
-    runtime.setMetaPanelSources(stepPanel, sources.map((source) => {
-      const host = (() => {
-        try {
-          return new URL(source.url).hostname;
-        } catch {
-          return undefined;
-        }
-      })();
-      return {
-        title: source.name,
-        url: source.url,
-        host,
-        note: source.snippet?.trim() || undefined
-      };
-    }));
-    return sources;
+    this.appendProcessStepDetail(runtime, stepPanel, `研究问题：${question}`);
+    this.appendProcessStepDetail(runtime, stepPanel, this.resolveProcessDetail(reason));
+
+    const result = await runWebResearchRound({
+      round,
+      question,
+      budget,
+      alreadyFetchedUrls: new Set(state.pages.map((page) => page.url)),
+      sourceStart: state.pages.length + 1,
+      signal: runtime.getAbortSignal(),
+      expandQueries: async (researchQuestion, maxQueries) => {
+        const reply = await runtime.completeModelReply(
+          [
+            this.createEphemeralMessage(
+              "system",
+              buildSidetResearchQueryContext(researchQuestion, new Date(), maxQueries)
+            ),
+            ...baseMessages
+          ],
+          {
+            webSearchMode: "off"
+          }
+        );
+        return reply.contentText;
+      },
+      searchMany: (queries, onProgress) => this.webSearch.searchMany(queries, {
+        maxQueries: 4,
+        onProgress: (event) => onProgress?.({ message: event.message })
+      }),
+      fetchPage: async (url) => {
+        const attachment = await this.buildWebpageAttachment(url);
+        return {
+          title: attachment.name,
+          url: attachment.url,
+          content: attachment.rawContent ?? attachment.content
+        };
+      },
+      compressEvidence: async (researchQuestion, evidenceInput, maxChars) => {
+        const reply = await runtime.completeModelReply(
+          [
+            this.createEphemeralMessage(
+              "system",
+              buildSidetResearchEvidenceContext(researchQuestion, maxChars)
+            ),
+            ...baseMessages,
+            this.createEphemeralMessage("user", evidenceInput)
+          ],
+          {
+            webSearchMode: "off"
+          }
+        );
+        return reply.contentText;
+      },
+      onProgress: (event: ResearchRoundProgress) => {
+        this.appendProcessStepDetail(runtime, stepPanel, event.message);
+      },
+      now: Date.now
+    });
+
+    if (result.pages.length > 0) {
+      runtime.setMetaPanelSources(stepPanel, result.pages.map((page) => ({
+        title: page.title,
+        url: page.url,
+        host: page.host,
+        note: page.snippet?.trim() || undefined
+      })));
+    } else if (result.results.length > 0) {
+      runtime.setMetaPanelSources(stepPanel, result.results.slice(0, 5).map((item, index) => ({
+        title: `${index + 1}. ${item.title}`,
+        url: item.url,
+        host: item.host,
+        note: item.snippet
+      })));
+    }
+
+    return result;
   }
 
   private async streamWebSearchFinalAnswer(
     runtime: LocalAssistantTaskRuntime,
     transcript: MessageRecord[],
-    latestSearchState?: ModelDrivenWebSearchState | null,
-    originalQuery?: string,
-    assistantSeed?: string | null
-  ): Promise<void> {
-    const seed = assistantSeed?.trim() || "";
-    const fallbackQuery = latestSearchState?.selectedQuery?.trim() || originalQuery || "当前查询";
-    await this.streamDisplayableModelAnswer(
+    options: {
+      originalQuery: string;
+      exhausted: boolean;
+      pages: ResearchPage[];
+      searchResults: WebSearchResult[];
+    }
+  ): Promise<string> {
+    return this.streamDisplayableModelAnswer(
       runtime,
       [
         this.createEphemeralMessage(
           "system",
-          seed ? buildSidetWebSearchFinalAnswerRepairContext() : buildSidetWebSearchFinalAnswerContext()
+          buildSidetResearchFinalAnswerContext({
+            hasEvidence: options.pages.length > 0 || options.searchResults.length > 0,
+            exhausted: options.exhausted
+          })
         ),
-        ...transcript,
-        ...(seed ? [this.createEphemeralMessage("assistant", seed)] : [])
+        ...transcript
       ],
       {
-        fallbackText: latestSearchState && latestSearchState.results.length > 0
-          ? this.buildSearchOnlyFallbackAnswer(fallbackQuery, latestSearchState)
-          : "当前没有得到可显示的回复。"
+        fallbackText: this.buildResearchFallbackAnswer(
+          options.originalQuery,
+          options.pages,
+          options.searchResults
+        )
       }
     );
+  }
+
+  private buildResearchFallbackAnswer(
+    query: string,
+    pages: ResearchPage[],
+    searchResults: WebSearchResult[]
+  ): string {
+    if (pages.length > 0) {
+      return [
+        `我已经围绕“${query}”读了 ${pages.length} 个网页，但当前还没能整理出完整答复。`,
+        "",
+        "已读来源已经按顺序放在回答下方；可以先看这些来源，或让我基于其中某一页继续整理。"
+      ].join("\n");
+    }
+    if (searchResults.length > 0) {
+      return this.buildSearchOnlyFallbackAnswer(query, searchResults);
+    }
+    return `我已经围绕“${query}”做了检索，但当前没有找到可用资料。`;
+  }
+
+  /**
+   * 把本轮联网来源写成结构化数据，由回答底部的来源列表渲染。
+   *
+   * 有抓取正文时按全局编号给出来源，正文里的 [n] 与数组序号一一对应；
+   * 只有搜索摘要时列前 5 条并标记为 summary。来源不再写进正文，避免
+   * 复制、导出和渲染时重复出现两套来源列表。
+   */
+  private commitWebSearchSources(
+    runtime: LocalAssistantTaskRuntime,
+    pages: ResearchPage[],
+    searchResults: WebSearchResult[]
+  ): void {
+    if (runtime.getAbortSignal().aborted) {
+      return;
+    }
+
+    const seenUrls = new Set<string>();
+    const uniquePages = pages.filter((page) => {
+      if (seenUrls.has(page.url)) {
+        return false;
+      }
+      seenUrls.add(page.url);
+      return true;
+    });
+
+    let sources: MessageSource[];
+    if (uniquePages.length > 0) {
+      sources = uniquePages.map((page) => ({
+        title: page.title,
+        url: page.url,
+        host: page.host || this.resolveWebSourceHost(page.url) || undefined,
+        note: page.snippet?.trim() || undefined,
+        readDepth: "full"
+      }));
+    } else {
+      sources = searchResults.slice(0, 5).map((result) => ({
+        title: result.title,
+        url: result.url,
+        host: result.host,
+        note: result.snippet?.trim() || undefined,
+        readDepth: "summary"
+      }));
+    }
+
+    runtime.setSources(sources);
+  }
+
+  private resolveWebSourceHost(url: string): string {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return "";
+    }
   }
 
   private appendMetaPanel(
@@ -1468,34 +1433,6 @@ export class WorkspaceController {
     chunk: string
   ): void {
     runtime.appendMetaPanelText(panel, chunk);
-  }
-
-  private async repairWebSearchContinuation(
-    runtime: LocalAssistantTaskRuntime,
-    transcript: MessageRecord[],
-    reply: {
-      contentText: string;
-      reasoningText: string;
-    }
-  ): Promise<{
-    contentText: string;
-    reasoningText: string;
-  }> {
-    return this.streamProtocolReply(
-      runtime,
-      [
-        this.createEphemeralMessage("system", buildSidetWebSearchContinuationRepairContext()),
-        ...transcript,
-        this.createEphemeralMessage(
-          "assistant",
-          reply.contentText.trim() || "（上一条没有给出可执行下一步，也没有给出可显示答复）"
-        )
-      ],
-      {
-        parseSearch: true,
-        parseFetch: true
-      }
-    );
   }
 
   private appendProcessStepDetail(
@@ -1514,8 +1451,7 @@ export class WorkspaceController {
     runtime: LocalAssistantTaskRuntime,
     messages: MessageRecord[],
     options: {
-      parseSearch?: boolean;
-      parseFetch?: boolean;
+      parseResearch?: boolean;
     }
   ): Promise<{
     contentText: string;
@@ -1527,13 +1463,7 @@ export class WorkspaceController {
         runtime.appendReasoning(chunk);
       },
       shouldStop: ({ contentText }) => {
-        if (options.parseSearch && parseSidetSearchBlock(contentText)) {
-          return true;
-        }
-        if (options.parseFetch && parseSidetFetchBlock(contentText)) {
-          return true;
-        }
-        return false;
+        return Boolean(options.parseResearch && parseSidetResearchBlock(contentText));
       }
     });
 
@@ -1549,7 +1479,7 @@ export class WorkspaceController {
     options: {
       fallbackText?: string;
     } = {}
-  ): Promise<void> {
+  ): Promise<string> {
     const streamer = createDisplayableAnswerStreamer((chunk) => {
       runtime.appendContent(chunk);
     });
@@ -1565,11 +1495,11 @@ export class WorkspaceController {
 
     const visibleText = streamer.finish(reply.contentText);
     if (visibleText.trim()) {
-      return;
+      return visibleText;
     }
 
     const repairedReply = await runtime.completeModelReply([
-      this.createEphemeralMessage("system", buildSidetWebSearchFinalAnswerRepairContext()),
+      this.createEphemeralMessage("system", buildSidetResearchFinalAnswerRepairContext()),
       ...messages,
       ...(reply.contentText.trim()
         ? [this.createEphemeralMessage("assistant", reply.contentText)]
@@ -1580,16 +1510,18 @@ export class WorkspaceController {
     const repairedText = stripSidetProtocolBlocks(repairedReply.contentText).trim();
     if (repairedText) {
       runtime.appendContent(repairedText);
-      return;
+      return repairedText;
     }
-    runtime.appendContent(options.fallbackText ?? "当前没有得到可显示的回复。");
+    const fallbackText = options.fallbackText ?? "当前没有得到可显示的回复。";
+    runtime.appendContent(fallbackText);
+    return fallbackText;
   }
 
-  private buildSearchOnlyFallbackAnswer(query: string, searchState: ModelDrivenWebSearchState): string {
+  private buildSearchOnlyFallbackAnswer(query: string, results: WebSearchResult[]): string {
     return [
       `我已经按“${query}”完成了这轮网页搜索，但当前还不足以整理出可靠结论。`,
       "",
-      `本轮命中的网页已经按顺序放在上面的联网搜索里，共 ${searchState.results.length} 条。`,
+      `本轮命中的网页已经按顺序放在上面的联网搜索里，共 ${results.length} 条。`,
       "",
       "下一步更合适的做法是继续抓取其中的网页正文，再整理成一版明确结论。"
     ].join("\n");

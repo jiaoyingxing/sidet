@@ -54,7 +54,10 @@ function createRenderingHarness(ChatViewAssistantRendering) {
     setPlainMessageContent: () => undefined,
     renderInlineToolAction: () => undefined,
     renderWikiMaintenancePlanAction: () => undefined,
-    importWebSearchResultUrl: () => undefined
+    renderAnswerSources: () => undefined,
+    renderAnswerActions: () => undefined,
+    importWebSearchResultUrl: () => undefined,
+    openSourceModal: () => undefined
   });
 }
 

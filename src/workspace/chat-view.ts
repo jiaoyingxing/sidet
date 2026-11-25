@@ -1,6 +1,7 @@
 import {
   Component,
   ItemView,
+  MarkdownRenderer,
   Platform,
   WorkspaceLeaf,
   setIcon,
@@ -27,6 +28,8 @@ import { ChatViewInlineSuggests } from "./chat-view-inline-suggests";
 import { ChatViewMessageActions } from "./chat-view-message-actions";
 import { ChatViewAssistantActions } from "./chat-view-assistant-actions";
 import { ChatViewAssistantRendering } from "./chat-view-assistant-rendering";
+import { hasPartialErrorContent } from "./chat-view-answer-presentation";
+import { ChatViewSourceModal, type AnswerSourceTarget } from "./chat-view-source-modal";
 import { ChatViewMobileComposer } from "./chat-view-mobile-composer";
 import { ChatViewContextIntake } from "./chat-view-context-intake";
 import { ChatViewDraftRuntime } from "./chat-view-draft-runtime";
@@ -59,6 +62,7 @@ import {
   resolveScrollBottomTarget,
   shouldShowScrollBottomButton
 } from "./chat-view-layout-metrics";
+import { haltMobileScrollMomentum } from "./chat-view-mobile-scroll-momentum";
 
 type ChatMenuKind = "context" | "message" | "model";
 
@@ -153,6 +157,7 @@ export class ChatView extends ItemView {
   private modelMenuClose: (() => void) | null = null;
   private modelMenuAnchorEl: HTMLElement | null = null;
   private messageRenderComponents: Component[] = [];
+  private messageHighlightTimer: number | null = null;
   private composerResizeObserver: ResizeObserver | null = null;
   private homeComposerSlotEl: HTMLDivElement | null = null;
   private homeCapabilityRowEl: HTMLDivElement | null = null;
@@ -168,6 +173,7 @@ export class ChatView extends ItemView {
   private desktopPaneItemEl: HTMLElement | null = null;
   private readonly messageActions: ChatViewMessageActions;
   private readonly inlineSuggests: ChatViewInlineSuggests;
+  private sourceModal: ChatViewSourceModal | null = null;
   private readonly assistantActions: ChatViewAssistantActions;
   private readonly assistantRendering: ChatViewAssistantRendering;
   private readonly mobileComposer: ChatViewMobileComposer;
@@ -237,7 +243,9 @@ export class ChatView extends ItemView {
     });
     this.assistantActions = new ChatViewAssistantActions({
       controller: this.controller,
-      leaf: this.leaf
+      leaf: this.leaf,
+      copyText: (text) => this.messageActions.copyTextToClipboard(text),
+      renderMarkdown: (parentEl, markdown) => this.renderAnswerMarkdown(parentEl, markdown)
     });
     this.assistantRendering = new ChatViewAssistantRendering({
       getApp: () => this.controller.getApp(),
@@ -279,11 +287,16 @@ export class ChatView extends ItemView {
         this.assistantActions.renderInlineToolAction(parentEl, conversation, message),
       renderWikiMaintenancePlanAction: (parentEl, conversation, message) =>
         this.assistantActions.renderWikiMaintenancePlanAction(parentEl, conversation, message),
+      renderAnswerSources: (parentEl, message) =>
+        this.assistantActions.renderAnswerSources(parentEl, message),
+      renderAnswerActions: (parentEl, conversation, message) =>
+        this.assistantActions.renderAnswerActions(parentEl, conversation, message),
       importWebSearchResultUrl: (url) => {
         void this.contextIntake.addWebpageAttachmentFromUrl(url, {
           textareaEl: this.getPreferredComposerTextarea()
         });
-      }
+      },
+      openSourceModal: (target) => this.openSourceModal(target)
     });
     this.conversationRuntime = new ChatViewConversationRuntime({
       controller: this.controller,
@@ -295,6 +308,15 @@ export class ChatView extends ItemView {
       trackMessageRenderComponent: (component) => {
         this.messageRenderComponents.push(component);
       },
+      unloadMessageRenderComponents: (components) => {
+        const unloaded = new Set(components);
+        for (const component of unloaded) {
+          component.unload();
+        }
+        this.messageRenderComponents = this.messageRenderComponents.filter(
+          (component) => !unloaded.has(component)
+        );
+      },
       resetMessageRenderComponents: () => this.resetMessageRenderComponents(),
       renderAssistantMetaBlocks: (parentEl, contentEl, message) =>
         this.renderAssistantMetaBlocks(parentEl, contentEl, message),
@@ -304,6 +326,10 @@ export class ChatView extends ItemView {
         this.assistantActions.renderInlineToolAction(parentEl, conversation, message),
       renderWikiMaintenancePlanAction: (parentEl, conversation, message) =>
         this.assistantActions.renderWikiMaintenancePlanAction(parentEl, conversation, message),
+      renderAnswerSources: (parentEl, message) =>
+        this.assistantActions.renderAnswerSources(parentEl, message),
+      renderAnswerActions: (parentEl, conversation, message) =>
+        this.assistantActions.renderAnswerActions(parentEl, conversation, message),
       openWebpageAttachmentPreview: (attachment) => {
         this.contextIntake.openWebpageAttachmentPreview(attachment);
       },
@@ -315,14 +341,19 @@ export class ChatView extends ItemView {
       setScrollHostTop: (scrollTop) => this.setScrollHostTop(scrollTop),
       setScrollPinnedToBottom: (value) => {
         this.scrollPinnedToBottom = value;
+        if (value) {
+          this.conversationRuntime?.ensureVirtualWindowAtBottom();
+        }
       },
       closeInlineSuggests: () => this.inlineSuggests.closeAll(),
       cancelComposerScrollRestore: () => this.cancelComposerScrollRestore(),
+      highlightMessage: (messageId) => this.highlightMessage(messageId),
       renderHome: (parentEl) => this.renderHome(parentEl),
       setHomeComposerSlot: (slotEl) => this.setHomeComposerSlot(slotEl)
     });
     this.mobileComposer = new ChatViewMobileComposer({
       desktopBottomMessageGap: ChatView.DESKTOP_BOTTOM_MESSAGE_GAP,
+      bottomPinThreshold: ChatView.BOTTOM_PIN_THRESHOLD,
       getContentEl: () => this.contentEl,
       getRootEl: () => this.rootEl,
       getMessagesBottomSpacerEl: () => this.messagesBottomSpacerEl,
@@ -467,6 +498,9 @@ export class ChatView extends ItemView {
     this.commitDraft({ immediatePersistence: true });
     this.mobileComposer.release();
     this.inlineSuggests.closeAll();
+    this.sourceModal?.close();
+    this.sourceModal = null;
+    this.clearMessageHighlight();
     this.containerEl.removeClass(ChatView.CHAT_LEAF_CONTENT_CLASS);
     this.containerEl.removeClass("is-android-runtime");
     this.containerEl.removeClass("is-ios-runtime");
@@ -672,7 +706,7 @@ export class ChatView extends ItemView {
     setIcon(scrollBottomIcon, "arrow-down");
     this.scrollBottomButtonEl.addEventListener("click", (event) => {
       event.preventDefault();
-      this.scrollMessagesToBottom({ keepPinned: true });
+      this.jumpToConversationBottom();
     });
 
     this.startComposerResizeObserver();
@@ -693,12 +727,42 @@ export class ChatView extends ItemView {
     this.scheduleViewportSync();
   }
 
-  private async handleSend(options: { focusComposer?: boolean } = {}): Promise<boolean> {
-    return this.draftRuntime.handleSend(options);
+  private async handleSend(): Promise<boolean> {
+    return this.draftRuntime.handleSend();
   }
 
   private renderConversation(): void {
+    this.sourceModal?.close();
+    this.sourceModal = null;
+    this.clearMessageHighlight();
     this.conversationRuntime.renderConversation();
+  }
+
+  private openSourceModal(target: AnswerSourceTarget): void {
+    this.sourceModal?.close();
+    this.sourceModal = new ChatViewSourceModal(
+      {
+        app: this.controller.getApp(),
+        copyText: (text) => this.messageActions.copyTextToClipboard(text)
+      },
+      target
+    );
+    this.sourceModal.open();
+  }
+
+  private renderAnswerMarkdown(parentEl: HTMLElement, markdown: string): void {
+    const renderComponent = new Component();
+    this.addChild(renderComponent);
+    this.messageRenderComponents.push(renderComponent);
+    void MarkdownRenderer.render(
+      this.controller.getApp(),
+      markdown,
+      parentEl,
+      this.controller.getApp().workspace.getActiveFile()?.path ?? "",
+      renderComponent
+    ).catch((error) => {
+      console.error("Sidet：渲染来源列表失败", error);
+    });
   }
 
   private renderHome(parentEl: HTMLElement): HTMLDivElement {
@@ -1003,6 +1067,45 @@ export class ChatView extends ItemView {
   private renderViewState(): void {
     this.draftRuntime.renderViewState();
     this.contextIntake.syncDraftAttachmentChips();
+    this.consumeMessageRevealRequest();
+  }
+
+  private consumeMessageRevealRequest(): void {
+    const request = this.controller.getLeafViewState(this.leaf).messageRevealRequest;
+    if (!request) {
+      return;
+    }
+    this.controller.clearMessageReveal(this.leaf);
+    const conversationId = this.controller.getChatLeafState(this.leaf).conversationId;
+    if (request.conversationId !== conversationId) {
+      return;
+    }
+    this.conversationRuntime.revealMessage(request.messageId);
+  }
+
+  private highlightMessage(messageId: string): void {
+    this.clearMessageHighlight();
+    const itemEl = this.contentEl.querySelector<HTMLElement>(
+      `.sidet-message[data-message-id="${messageId}"]`
+    );
+    if (!itemEl) {
+      return;
+    }
+    itemEl.addClass("is-search-hit");
+    this.messageHighlightTimer = window.setTimeout(() => {
+      this.messageHighlightTimer = null;
+      itemEl.removeClass("is-search-hit");
+    }, 1600);
+  }
+
+  private clearMessageHighlight(): void {
+    if (this.messageHighlightTimer !== null) {
+      window.clearTimeout(this.messageHighlightTimer);
+      this.messageHighlightTimer = null;
+    }
+    this.contentEl.querySelectorAll(".sidet-message.is-search-hit").forEach((element) => {
+      element.classList.remove("is-search-hit");
+    });
   }
 
   private handleLeafStateChange(): void {
@@ -1131,11 +1234,14 @@ export class ChatView extends ItemView {
     }
 
     this.mobileComposer.bindKeyboardFollow();
+    this.mobileComposer.bindTailCompatibilityGuard();
     this.disposeCallbacks.push(this.controller.subscribeWorkspaceState(() => {
       this.syncComposerButtons();
     }));
     const scrollHost = this.getScrollHost();
     const onScroll = () => {
+      this.conversationRuntime.handleVirtualScroll();
+      this.assistantRendering.refreshStreamingMarkdownAfterScroll();
       if (this.assistantRendering.handleScroll(scrollHost.scrollTop)) {
         return;
       }
@@ -1179,13 +1285,12 @@ export class ChatView extends ItemView {
     this.textareaEl.addEventListener("blur", onComposerFocusChange);
     // Read-only capture probe for the delayed-blur evidence gate: it never
     // preventDefaults, retargets, or blocks these compatibility events.
-    const recordNativeTailEvent = (event: MouseEvent): void => {
-      if (Date.now() > this.mobileTailObservationUntilMs) {
-        return;
-      }
+    const readNativeTailEvent = (
+      event: MouseEvent
+    ): MobileHomeTailEventObservation => {
       const targetEl = event.target instanceof Element ? event.target : null;
       const textareaEl = this.textareaEl;
-      const tailEvent: MobileHomeTailEventObservation = {
+      return {
         type: event.type,
         target: readMobileHomeElementSignature(targetEl),
         targetIsTextarea: !!targetEl && targetEl === textareaEl,
@@ -1195,6 +1300,12 @@ export class ChatView extends ItemView {
           !!targetEl && !!textareaEl && textareaEl.contains(targetEl),
         activeElement: readMobileHomeElementSignature(document.activeElement)
       };
+    };
+    const recordNativeTailEvent = (event: MouseEvent): void => {
+      if (Date.now() > this.mobileTailObservationUntilMs) {
+        return;
+      }
+      const tailEvent = readNativeTailEvent(event);
       this.recordMobileHomeInputLifecycle(
         event.type === "contextmenu"
           ? "native.tail.contextmenu"
@@ -1202,8 +1313,20 @@ export class ChatView extends ItemView {
         { tailEvent }
       );
     };
+    // The press events of the same compatibility sequence answer whether the
+    // tail press ever reached the DOM at all; they stay observation-only.
+    const recordNativeTailPress = (event: MouseEvent): void => {
+      if (Date.now() > this.mobileTailObservationUntilMs) {
+        return;
+      }
+      this.recordMobileHomeInputLifecycle(`native.tail.${event.type}`, {
+        tailEvent: readNativeTailEvent(event)
+      });
+    };
     window.addEventListener("click", recordNativeTailEvent, true);
     window.addEventListener("contextmenu", recordNativeTailEvent, true);
+    window.addEventListener("mousedown", recordNativeTailPress, true);
+    window.addEventListener("mouseup", recordNativeTailPress, true);
     this.disposeCallbacks.push(() => {
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("orientationchange", onViewportChange);
@@ -1211,6 +1334,8 @@ export class ChatView extends ItemView {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("click", recordNativeTailEvent, true);
       window.removeEventListener("contextmenu", recordNativeTailEvent, true);
+      window.removeEventListener("mousedown", recordNativeTailPress, true);
+      window.removeEventListener("mouseup", recordNativeTailPress, true);
       this.textareaEl?.removeEventListener("focus", onComposerFocusChange);
       this.textareaEl?.removeEventListener("blur", onComposerFocusChange);
     });
@@ -1279,7 +1404,21 @@ export class ChatView extends ItemView {
 
   private scrollMessagesToBottom(options: { keepPinned?: boolean } = {}): void {
     this.cancelComposerScrollRestore();
+    this.conversationRuntime.ensureVirtualWindowAtBottom();
     this.assistantRendering.scrollMessagesToBottom(options);
+  }
+
+  private jumpToConversationBottom(): void {
+    if (!this.isPhoneLayout() || !this.isMobileRuntime()) {
+      this.scrollMessagesToBottom({ keepPinned: true });
+      return;
+    }
+
+    // WebView 的原生惯性不会因为程序化 scrollTop 停下；先刹住动量再跳到底部，
+    // 否则松手后的动量会在跳转后继续把内容带走。
+    haltMobileScrollMomentum(this.getScrollHost(), () => {
+      this.scrollMessagesToBottom({ keepPinned: true });
+    });
   }
 
   private openComposerModal(): void {
@@ -1292,7 +1431,7 @@ export class ChatView extends ItemView {
     }
     this.closeMobileComposerLayer({ blur: true });
     this.composerModal = new ComposerModal(this.controller, this.leaf, {
-      onSend: () => this.handleSend({ focusComposer: false }),
+      onSend: () => this.handleSend(),
       canSend: () => this.draftRuntime.getLocalDraft().trim().length > 0 || this.contextIntake.getDraftAttachments().length > 0,
       onAfterClose: () => {
         this.composerModal = null;
@@ -1669,7 +1808,10 @@ export class ChatView extends ItemView {
   }
 
   private shouldRenderAssistantMessageMarkdown(message: MessageRecord): boolean {
-    return message.role === "assistant" && message.status !== "error" && Boolean(message.text.trim());
+    if (message.role !== "assistant" || !message.text.trim()) {
+      return false;
+    }
+    return message.status === "done" || (message.status === "error" && hasPartialErrorContent(message));
   }
   private renderAssistantMetaBlocks(
     itemEl: HTMLDivElement,

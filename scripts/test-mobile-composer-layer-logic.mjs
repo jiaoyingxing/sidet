@@ -110,6 +110,34 @@ function createElement(tagName, classNames = []) {
     isConnected: true,
     capturedPointers: [],
     failPointerCapture: false,
+    listeners: new Map(),
+    addEventListener(type, handler) {
+      const handlers = this.listeners.get(type) ?? [];
+      handlers.push(handler);
+      this.listeners.set(type, handlers);
+    },
+    removeEventListener(type, handler) {
+      const handlers = this.listeners.get(type) ?? [];
+      this.listeners.set(
+        type,
+        handlers.filter((entry) => entry !== handler)
+      );
+    },
+    dispatchEvent(type, event) {
+      for (const handler of this.listeners.get(type) ?? []) {
+        handler(event);
+      }
+      return event.defaultPrevented !== true;
+    },
+    contains(candidate) {
+      if (!candidate) {
+        return false;
+      }
+      if (candidate === this) {
+        return true;
+      }
+      return this.childNodes.some((child) => child.contains?.(candidate));
+    },
     setPointerCapture(pointerId) {
       if (this.failPointerCapture) {
         throw new Error("stub pointer capture rejected");
@@ -595,6 +623,31 @@ function assertComposerUsesNativeTextareaActivation() {
     /\.sidet-chat-view\.is-phone-layout\.is-mobile-runtime \.sidet-composer-input-shell::before/,
     "the input shell must not retain an invisible expanded hit band"
   );
+  assert.match(
+    mobileComposerSource,
+    /rootEl\.addEventListener\("pointerdown", onPointerDown, true\)[\s\S]*rootEl\.addEventListener\("mousedown", onCompatMouseEvent, true\)[\s\S]*rootEl\.addEventListener\("mouseup", onCompatMouseEvent, true\)/,
+    "the activation tail guard must stay scoped to the chat root and disarm on any new pointerdown"
+  );
+  assert.doesNotMatch(
+    mobileComposerSource,
+    /window\.addEventListener\(\s*"(?:pointerdown|mousedown|mouseup)"/,
+    "the activation tail guard must not widen into a window-level gesture listener"
+  );
+  assert.match(
+    mobileComposerSource,
+    /document\.activeElement !== textareaEl[\s\S]*composerWrapEl\.contains\(targetEl\)[\s\S]*this\.tailCompatibilityGuardArmed = false;[\s\S]*event\.preventDefault\(\)/,
+    "the tail guard may cancel only the default action of one press outside the composer while the real textarea still holds focus"
+  );
+  assert.equal(
+    mobileComposerSource.match(/preventDefault\(\)/g)?.length,
+    1,
+    "the activation owner may cancel exactly one default action: the tail compatibility press"
+  );
+  assert.doesNotMatch(
+    mobileComposerSource,
+    /stopPropagation/,
+    "the tail guard must never block propagation"
+  );
 }
 
 function assertNativePointerUpCompletesWithoutCompatibilityClick(module) {
@@ -640,6 +693,7 @@ function assertNativePointerUpCompletesWithoutCompatibilityClick(module) {
     const nativeActivationEvents = [];
     const runtime = new module.ChatViewMobileComposer({
       desktopBottomMessageGap: 24,
+      bottomPinThreshold: 40,
       getContentEl: () => contentEl,
       getRootEl: () => rootEl,
       getMessagesBottomSpacerEl: () => null,
@@ -982,6 +1036,7 @@ function assertActivationSurvivesPointerCaptureFailure(mobileComposerModule) {
     const nativeActivationEvents = [];
     const runtime = new mobileComposerModule.ChatViewMobileComposer({
       desktopBottomMessageGap: 24,
+      bottomPinThreshold: 40,
       getContentEl: () => contentEl,
       getRootEl: () => rootEl,
       getMessagesBottomSpacerEl: () => null,
@@ -1048,6 +1103,319 @@ function assertActivationSurvivesPointerCaptureFailure(mobileComposerModule) {
   }
 }
 
+function assertActivationTailPressDefaultIsSuppressedOnce(module) {
+  const environment = installEnvironment();
+  try {
+    const contentEl = createElement("div", [
+      "sidet-chat-view",
+      "is-phone-layout",
+      "is-mobile-runtime",
+      "is-ios-runtime"
+    ]);
+    contentEl.ownerDocument = environment.ownerDocument;
+    contentEl.scrollTop = 0;
+    contentEl.scrollHeight = 800;
+    contentEl.clientHeight = 800;
+    const rootEl = createElement("div", ["sidet-chat-root"]);
+    rootEl.getBoundingClientRect = () => ({
+      top: 0,
+      right: 378,
+      bottom: 800,
+      left: 12,
+      width: 366,
+      height: 800
+    });
+    const composerWrapEl = createElement("div", ["sidet-composer-wrap"]);
+    const textareaEl = createElement("textarea", ["sidet-textarea"]);
+    textareaEl.readOnly = false;
+    textareaEl.focus = () => {
+      environment.ownerDocument.activeElement = textareaEl;
+    };
+    textareaEl.blur = () => {
+      environment.ownerDocument.activeElement = null;
+    };
+    composerWrapEl.appendChild(textareaEl);
+    rootEl.appendChild(composerWrapEl);
+    contentEl.appendChild(rootEl);
+    const homeEl = createElement("div", ["sidet-home"]);
+    rootEl.appendChild(homeEl);
+
+    const nativeActivationEvents = [];
+    const runtime = new module.ChatViewMobileComposer({
+      desktopBottomMessageGap: 24,
+      bottomPinThreshold: 40,
+      getContentEl: () => contentEl,
+      getRootEl: () => rootEl,
+      getMessagesBottomSpacerEl: () => null,
+      getScrollHost: () => contentEl,
+      setScrollHostTop: () => {},
+      updatePinnedToBottom: () => {},
+      syncScrollBottomButtonVisibility: () => {},
+      syncScrollAffordances: () => {},
+      positionFloatingControls: () => {},
+      syncLayoutClasses: () => {},
+      getDraftText: () => "",
+      getComposerPlaceholder: () => "输入消息",
+      focusComposerTextarea: (target) => target?.focus({ preventScroll: true }),
+      syncComposerButtons: () => {},
+      isComposerReadOnly: () => false,
+      isPhoneLayout: () => true,
+      isMobileRuntime: () => true,
+      getPendingScrollIntent: () => "none",
+      hasComposerResizeObserver: () => true,
+      isHomeState: () => true,
+      onComposerLayerChange: () => {},
+      onNativeActivationEvent: (event) => {
+        nativeActivationEvents.push(event);
+      }
+    });
+    runtime.attachMainComposerElements({
+      composerWrapEl,
+      composerEl: null,
+      attachmentStripEl: null,
+      inputShellEl: null,
+      textareaEl,
+      textareaMirrorEl: null,
+      expandButtonEl: null
+    });
+    runtime.bindTailCompatibilityGuard();
+
+    const createPress = (type, targetEl) => {
+      const event = {
+        type,
+        cancelable: true,
+        target: targetEl,
+        defaultPrevented: false,
+        preventDefault() {
+          event.defaultPrevented = true;
+        }
+      };
+      return event;
+    };
+
+    const idlePress = createPress("mousedown", homeEl);
+    rootEl.dispatchEvent("mousedown", idlePress);
+    assert.equal(
+      idlePress.defaultPrevented,
+      false,
+      "the tail guard must stay inert until an owned activation completes"
+    );
+
+    assert.equal(runtime.beginComposerActivationFromNativePointer(3), true);
+    runtime.completeComposerActivationPointer(3);
+    assert.equal(
+      environment.ownerDocument.activeElement,
+      textareaEl,
+      "the owned activation must land focus before the tail guard arms"
+    );
+
+    rootEl.dispatchEvent("pointerdown", createPress("pointerdown", homeEl));
+    const newGesturePress = createPress("mousedown", homeEl);
+    rootEl.dispatchEvent("mousedown", newGesturePress);
+    assert.equal(
+      newGesturePress.defaultPrevented,
+      false,
+      "a new gesture must still be able to resign focus, so tapping outside still closes the keyboard"
+    );
+
+    textareaEl.blur();
+    assert.equal(runtime.beginComposerActivationFromNativePointer(4), true);
+    runtime.completeComposerActivationPointer(4);
+    const tailPress = createPress("mousedown", homeEl);
+    rootEl.dispatchEvent("mousedown", tailPress);
+    assert.equal(
+      tailPress.defaultPrevented,
+      true,
+      "the compatibility press that trails an owned activation must not resign the fresh focus to body"
+    );
+    assert.ok(
+      nativeActivationEvents.includes("native.tail.compat-default-suppressed"),
+      "the probe must expose that the tail press default was suppressed"
+    );
+    const secondTailPress = createPress("mouseup", homeEl);
+    rootEl.dispatchEvent("mouseup", secondTailPress);
+    assert.equal(
+      secondTailPress.defaultPrevented,
+      false,
+      "one owned activation may consume exactly one tail press"
+    );
+
+    textareaEl.blur();
+    assert.equal(runtime.beginComposerActivationFromNativePointer(5), true);
+    runtime.completeComposerActivationPointer(5);
+    const composerPress = createPress("mousedown", textareaEl);
+    rootEl.dispatchEvent("mousedown", composerPress);
+    assert.equal(
+      composerPress.defaultPrevented,
+      false,
+      "a press that lands inside the composer must keep its native behavior"
+    );
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertLayerCloseRestoresPinnedBottom(module) {
+  const environment = installEnvironment();
+  try {
+    const contentEl = createElement("div", [
+      "sidet-chat-view",
+      "is-phone-layout",
+      "is-mobile-runtime"
+    ]);
+    contentEl.ownerDocument = environment.ownerDocument;
+    contentEl.clientHeight = 500;
+    contentEl.getBoundingClientRect = () => ({
+      top: 0,
+      right: 390,
+      bottom: 800,
+      left: 0,
+      width: 390,
+      height: 800
+    });
+    globalThis.window.getComputedStyle = () => ({ paddingBottom: "0px" });
+    let layerActive = false;
+    Object.defineProperty(contentEl, "scrollHeight", {
+      get() {
+        return layerActive ? 900 : 1000;
+      }
+    });
+    const rootEl = createElement("div", ["sidet-chat-root"]);
+    rootEl.getBoundingClientRect = () => ({
+      top: 0,
+      right: 378,
+      bottom: 800,
+      left: 12,
+      width: 366,
+      height: 800
+    });
+    const composerWrapEl = createElement("div", ["sidet-composer-wrap"]);
+    composerWrapEl.getBoundingClientRect = () => ({
+      top: 700,
+      right: 390,
+      bottom: 780,
+      left: 0,
+      width: 390,
+      height: 80
+    });
+    const textareaEl = createElement("textarea", ["sidet-textarea"]);
+    textareaEl.readOnly = false;
+    composerWrapEl.appendChild(textareaEl);
+    rootEl.appendChild(composerWrapEl);
+    contentEl.appendChild(rootEl);
+
+    const scrollWrites = [];
+    let pinnedUpdates = 0;
+    const runtime = new module.ChatViewMobileComposer({
+      desktopBottomMessageGap: 24,
+      bottomPinThreshold: 40,
+      getContentEl: () => contentEl,
+      getRootEl: () => rootEl,
+      getMessagesBottomSpacerEl: () => null,
+      getScrollHost: () => contentEl,
+      setScrollHostTop: (value) => {
+        scrollWrites.push(value);
+        contentEl.scrollTop = value;
+      },
+      updatePinnedToBottom: () => {
+        pinnedUpdates += 1;
+      },
+      syncScrollBottomButtonVisibility: () => {},
+      syncScrollAffordances: () => {},
+      positionFloatingControls: () => {},
+      syncLayoutClasses: () => {},
+      getDraftText: () => "",
+      getComposerPlaceholder: () => "输入消息",
+      focusComposerTextarea: (target) => target?.focus?.(),
+      syncComposerButtons: () => {},
+      isComposerReadOnly: () => false,
+      isPhoneLayout: () => true,
+      isMobileRuntime: () => true,
+      getPendingScrollIntent: () => "none",
+      hasComposerResizeObserver: () => true,
+      isHomeState: () => false,
+      onComposerLayerChange: (active) => {
+        layerActive = active;
+      },
+      onNativeActivationEvent: () => {}
+    });
+    runtime.attachMainComposerElements({
+      composerWrapEl,
+      composerEl: null,
+      attachmentStripEl: null,
+      inputShellEl: null,
+      textareaEl,
+      textareaMirrorEl: null,
+      expandButtonEl: null
+    });
+
+    const prepareLayer = () => {
+      assert.equal(
+        runtime.layerRuntime.prepareForFocus(),
+        true,
+        "the phone composer layer must open for the focus transition"
+      );
+    };
+
+    runtime.scheduleViewportSync();
+    assert.equal(
+      contentEl.style.getPropertyValue("--sidet-composer-reserved-space"),
+      "124px",
+      "the resting geometry must seed the mobile bottom space"
+    );
+
+    composerWrapEl.getBoundingClientRect = () => ({
+      top: 400,
+      right: 390,
+      bottom: 480,
+      left: 0,
+      width: 390,
+      height: 80
+    });
+    prepareLayer();
+    runtime.scheduleViewportSync();
+    assert.equal(
+      contentEl.style.getPropertyValue("--sidet-composer-reserved-space"),
+      "124px",
+      "focus must keep the resting bottom space instead of shrinking it and sinking the content"
+    );
+
+    composerWrapEl.getBoundingClientRect = () => ({
+      top: 700,
+      right: 390,
+      bottom: 780,
+      left: 0,
+      width: 390,
+      height: 80
+    });
+    contentEl.scrollTop = 400; // layer-active bottom: 900 - 500
+    runtime.closeMobileComposerLayer({ blur: false });
+    assert.equal(
+      scrollWrites.at(-1),
+      500,
+      "closing the layer must re-pin a bottom reader to the restored resting bottom"
+    );
+    assert.equal(contentEl.scrollTop, 500);
+    assert.ok(
+      pinnedUpdates > 0,
+      "closing the layer must refresh the pinned state for the restored layout"
+    );
+
+    prepareLayer();
+    contentEl.scrollTop = 120; // far above the layer-active bottom
+    scrollWrites.length = 0;
+    runtime.closeMobileComposerLayer({ blur: false });
+    assert.deepEqual(
+      scrollWrites,
+      [],
+      "closing the layer must not move a reader who is not pinned to the bottom"
+    );
+    assert.equal(contentEl.scrollTop, 120);
+  } finally {
+    environment.restore();
+  }
+}
+
 async function main() {
   try {
     const layerModule = await loadMobileComposerLayerModule();
@@ -1060,6 +1428,8 @@ async function main() {
       mobileComposerModule
     );
     assertActivationSurvivesPointerCaptureFailure(mobileComposerModule);
+    assertActivationTailPressDefaultIsSuppressedOnce(mobileComposerModule);
+    assertLayerCloseRestoresPinnedBottom(mobileComposerModule);
     assertDrawerOwnershipDriftRestoresOriginalComposerParent(
       layerModule,
       workspaceOwnershipModule

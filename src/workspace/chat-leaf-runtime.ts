@@ -3,6 +3,7 @@ import { ConversationStore } from "../conversations/conversation-store";
 import { SimpleListeners } from "../shared/events";
 import type {
   ChatLeafExternalImportRequest,
+  ChatLeafMessageRevealRequest,
   ChatLeafState,
   ChatLeafViewState
 } from "../types";
@@ -22,6 +23,8 @@ interface ChatLeafEntry {
   suppressEchoToOrigin: boolean;
   externalImportRequest: ChatLeafExternalImportRequest | null;
   externalImportRequestNonce: number;
+  messageRevealRequest: ChatLeafMessageRevealRequest | null;
+  messageRevealRequestNonce: number;
   listeners: SimpleListeners;
 }
 
@@ -107,6 +110,8 @@ export class ChatLeafRuntime {
       suppressEchoToOrigin: entry.suppressEchoToOrigin,
       externalImportRequest: entry.externalImportRequest,
       externalImportRequestNonce: entry.externalImportRequestNonce,
+      messageRevealRequest: entry.messageRevealRequest,
+      messageRevealRequestNonce: entry.messageRevealRequestNonce,
       modelConfigId: entry.state.modelConfigId ?? null,
       knowledgeBaseIndexPath: entry.state.knowledgeBaseIndexPath ?? null,
       webSearchEnabled: entry.state.webSearchEnabled === true
@@ -176,6 +181,23 @@ export class ChatLeafRuntime {
     }
     entry.externalImportRequest = null;
     entry.externalImportRequestNonce += 1;
+    entry.listeners.emit();
+  }
+
+  queueMessageReveal(leaf: WorkspaceLeaf, request: ChatLeafMessageRevealRequest | null): void {
+    const entry = this.ensureChatLeafEntry(leaf);
+    entry.messageRevealRequest = request;
+    entry.messageRevealRequestNonce += 1;
+    entry.listeners.emit();
+  }
+
+  clearMessageReveal(leaf: WorkspaceLeaf): void {
+    const entry = this.ensureChatLeafEntry(leaf);
+    if (!entry.messageRevealRequest) {
+      return;
+    }
+    entry.messageRevealRequest = null;
+    entry.messageRevealRequestNonce += 1;
     entry.listeners.emit();
   }
 
@@ -392,6 +414,8 @@ export class ChatLeafRuntime {
       suppressEchoToOrigin: false,
       externalImportRequest: null,
       externalImportRequestNonce: 0,
+      messageRevealRequest: null,
+      messageRevealRequestNonce: 0,
       listeners: new SimpleListeners()
     };
     this.chatLeafEntries.set(leaf, entry);

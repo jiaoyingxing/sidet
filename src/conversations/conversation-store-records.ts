@@ -1,13 +1,16 @@
 import { UNTITLED_CONVERSATION_TITLE } from "../constants";
 import { sanitizeFileName } from "../shared/paths";
 import type {
+  ConversationContextSummary,
   ConversationFolderRecord,
   ConversationFolderSummary,
   ConversationRecord,
   ConversationSummary,
+  MessageAnswerVariant,
   MessageMetaPanelDisplay,
   MessageMetaPanel,
-  MessageRecord
+  MessageRecord,
+  MessageSource
 } from "../types";
 
 export interface RepairedConversationRecord {
@@ -48,6 +51,9 @@ export function buildConversationTitle(text: string): string {
 export function cloneConversation(conversation: ConversationRecord): ConversationRecord {
   return {
     ...conversation,
+    contextSummary: conversation.contextSummary
+      ? { ...conversation.contextSummary }
+      : undefined,
     messages: conversation.messages.map((message) => cloneMessage(message))
   };
 }
@@ -148,16 +154,33 @@ export function repairConversationRecord(
 
   const repairedMessages: MessageRecord[] = [];
   for (const message of sourceMessages) {
+    const normalizedSources = normalizeMessageSources(message.sources);
+    const normalizedErrorText = typeof message.errorText === "string" && message.errorText.trim()
+      ? message.errorText
+      : undefined;
+    const normalizedAnswerVariants = normalizeAnswerVariants(message.answerVariants);
+    const normalizedActiveAnswerVariantIndex = normalizeActiveAnswerVariantIndex(
+      message.activeAnswerVariantIndex,
+      (normalizedAnswerVariants?.length ?? 0) + 1
+    );
     const normalizedMessage: MessageRecord = {
       ...message,
       reasoningText: typeof message.reasoningText === "string" ? message.reasoningText : undefined,
       reasoningLabel: typeof message.reasoningLabel === "string" ? message.reasoningLabel : undefined,
-      metaPanels: normalizeMetaPanels(message.metaPanels)
+      errorText: normalizedErrorText,
+      metaPanels: normalizeMetaPanels(message.metaPanels),
+      sources: normalizedSources,
+      answerVariants: normalizedAnswerVariants,
+      activeAnswerVariantIndex: normalizedActiveAnswerVariantIndex
     };
     if (
       normalizedMessage.reasoningText !== message.reasoningText
       || normalizedMessage.reasoningLabel !== message.reasoningLabel
+      || normalizedMessage.errorText !== message.errorText
       || normalizedMessage.metaPanels !== message.metaPanels
+      || normalizedMessage.sources !== message.sources
+      || normalizedMessage.answerVariants !== message.answerVariants
+      || normalizedMessage.activeAnswerVariantIndex !== message.activeAnswerVariantIndex
     ) {
       repaired = true;
     }
@@ -168,7 +191,14 @@ export function repairConversationRecord(
     }
 
     repaired = true;
-    if (!normalizedMessage.text.trim() && !normalizedMessage.reasoningText?.trim()) {
+    // 替换提交后旧回答会搬进新消息的 answerVariants；即使正文还没落盘，
+    // 也不能把这条 streaming 消息连同历史版本一起丢掉。
+    const hasRecoverableContent = Boolean(normalizedMessage.text.trim())
+      || Boolean(normalizedMessage.reasoningText?.trim())
+      || (normalizedMessage.metaPanels?.length ?? 0) > 0
+      || (normalizedMessage.sources?.length ?? 0) > 0
+      || (normalizedMessage.answerVariants?.length ?? 0) > 0;
+    if (!hasRecoverableContent) {
       continue;
     }
 
@@ -223,6 +253,14 @@ export function repairConversationRecord(
     repaired = true;
   }
 
+  const repairedContextSummary = normalizeConversationContextSummary(
+    conversation.contextSummary,
+    repairedMessages
+  );
+  if (repairedContextSummary !== conversation.contextSummary) {
+    repaired = true;
+  }
+
   const normalizedConversation: ConversationRecord = {
     ...conversation,
     title: repairedTitle,
@@ -232,7 +270,8 @@ export function repairConversationRecord(
     folderId: repairedFolderId,
     draft: repairedDraft,
     modelConfigId: repairedModelConfigId,
-    messages: repairedMessages
+    messages: repairedMessages,
+    contextSummary: repairedContextSummary
   };
 
   return {
@@ -254,8 +293,152 @@ function cloneMessage(message: MessageRecord): MessageRecord {
     metaPanels: message.metaPanels?.map((panel) => ({
       ...panel,
       sources: panel.sources?.map((source) => ({ ...source }))
+    })),
+    sources: message.sources?.map((source) => ({ ...source })),
+    answerVariants: message.answerVariants?.map((variant) => ({
+      ...variant,
+      metaPanels: variant.metaPanels?.map((panel) => ({
+        ...panel,
+        sources: panel.sources?.map((source) => ({ ...source }))
+      })),
+      sources: variant.sources?.map((source) => ({ ...source }))
     }))
   };
+}
+
+function normalizeConversationContextSummary(
+  summary: unknown,
+  messages: readonly MessageRecord[]
+): ConversationContextSummary | undefined {
+  if (!summary || typeof summary !== "object") {
+    return undefined;
+  }
+
+  const candidate = summary as Partial<ConversationContextSummary>;
+  const text = typeof candidate.text === "string" ? candidate.text.trim() : "";
+  const summarizedThroughMessageId = typeof candidate.summarizedThroughMessageId === "string"
+    ? candidate.summarizedThroughMessageId.trim()
+    : "";
+  const updatedAt = typeof candidate.updatedAt === "number" && Number.isFinite(candidate.updatedAt)
+    ? candidate.updatedAt
+    : 0;
+  if (
+    !text
+    || !summarizedThroughMessageId
+    || !messages.some((message) => message.id === summarizedThroughMessageId)
+  ) {
+    return undefined;
+  }
+
+  if (
+    text === candidate.text
+    && summarizedThroughMessageId === candidate.summarizedThroughMessageId
+    && updatedAt === candidate.updatedAt
+  ) {
+    return candidate as ConversationContextSummary;
+  }
+
+  return {
+    text,
+    summarizedThroughMessageId,
+    updatedAt
+  };
+}
+
+function normalizeMessageSources(sources: unknown): MessageSource[] | undefined {
+  if (!Array.isArray(sources)) {
+    return undefined;
+  }
+  return sources as MessageSource[];
+}
+
+function normalizeAnswerVariants(variants: unknown): MessageAnswerVariant[] | undefined {
+  if (!Array.isArray(variants)) {
+    return undefined;
+  }
+
+  let changed = false;
+  const normalizedVariants: MessageAnswerVariant[] = [];
+  for (const variant of variants) {
+    const normalizedVariant = normalizeAnswerVariant(variant);
+    if (!normalizedVariant) {
+      changed = true;
+      continue;
+    }
+    if (normalizedVariant !== variant) {
+      changed = true;
+    }
+    normalizedVariants.push(normalizedVariant);
+  }
+
+  if (normalizedVariants.length === 0) {
+    return undefined;
+  }
+
+  return changed ? normalizedVariants : variants as MessageAnswerVariant[];
+}
+
+function normalizeAnswerVariant(variant: unknown): MessageAnswerVariant | null {
+  if (!variant || typeof variant !== "object") {
+    return null;
+  }
+
+  const candidate = variant as Partial<MessageAnswerVariant>;
+  const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
+  const status = candidate.status;
+  if (!id || typeof candidate.text !== "string" || (status !== "done" && status !== "error")) {
+    return null;
+  }
+
+  const reasoningText = typeof candidate.reasoningText === "string" ? candidate.reasoningText : undefined;
+  const reasoningLabel = typeof candidate.reasoningLabel === "string" ? candidate.reasoningLabel : undefined;
+  const errorText = typeof candidate.errorText === "string" && candidate.errorText.trim()
+    ? candidate.errorText
+    : undefined;
+  const metaPanels = normalizeMetaPanels(candidate.metaPanels);
+  const sources = normalizeMessageSources(candidate.sources);
+  const createdAt = typeof candidate.createdAt === "number" && Number.isFinite(candidate.createdAt)
+    ? candidate.createdAt
+    : 0;
+
+  if (
+    id === candidate.id
+    && reasoningText === candidate.reasoningText
+    && reasoningLabel === candidate.reasoningLabel
+    && errorText === candidate.errorText
+    && metaPanels === candidate.metaPanels
+    && sources === candidate.sources
+    && createdAt === candidate.createdAt
+  ) {
+    return candidate as MessageAnswerVariant;
+  }
+
+  return {
+    id,
+    text: candidate.text,
+    reasoningText,
+    reasoningLabel,
+    metaPanels,
+    sources,
+    status,
+    errorText,
+    createdAt
+  };
+}
+
+function normalizeActiveAnswerVariantIndex(index: unknown, totalVersions: number): number | undefined {
+  if (totalVersions <= 1) {
+    return undefined;
+  }
+  if (
+    typeof index === "number"
+    && Number.isInteger(index)
+    && index >= 0
+    && index < totalVersions
+  ) {
+    return index;
+  }
+  return totalVersions - 1;
 }
 
 function normalizeMetaPanels(metaPanels: unknown): MessageMetaPanel[] | undefined {
