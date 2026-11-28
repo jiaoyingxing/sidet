@@ -11,7 +11,6 @@ import {
 } from "../constants";
 import type {
   ModelConfigRecord,
-  ModelPreset,
   ModelProviderId,
   ModelProviderPreset,
   ReasoningCompatibilityMode,
@@ -34,13 +33,6 @@ function normalizeReasoningCompatibilityMode(value: unknown): ReasoningCompatibi
 
 function resolveProviderPreset(providerId: ModelProviderId): ModelProviderPreset | null {
   return MODEL_PROVIDER_PRESETS.find((provider) => provider.id === providerId) ?? null;
-}
-
-function resolveModelPreset(presetId: string | null | undefined): ModelPreset | null {
-  if (!presetId) {
-    return null;
-  }
-  return MODEL_PRESETS.find((preset) => preset.id === presetId) ?? null;
 }
 
 function resolveModelPresetId(value: unknown, model: string, baseUrl: string, providerId: ModelProviderId): string | null {
@@ -78,7 +70,6 @@ function normalizeModelConfigRecord(
     ? value.baseUrl.trim().replace(/\/+$/g, "")
     : providerPreset?.baseUrl ?? DEFAULT_BASE_URL;
   const presetId = resolveModelPresetId(value.presetId, model, baseUrl, providerId);
-  const preset = resolveModelPreset(presetId);
   const providerLabel = providerId === "custom"
     ? (typeof value.providerLabel === "string" && value.providerLabel.trim().length > 0
       ? value.providerLabel.trim()
@@ -103,7 +94,9 @@ function normalizeModelConfigRecord(
     baseUrl,
     reasoningEnabled,
     reasoningCompatibilityMode,
-    supportsImageInput: preset?.supportsImageInput === true
+    // 图片能力只认用户在这条模型上的开关（2026-11-27）：预设白名单已删除，
+    // 归一化不得再用任何外部值覆盖它——否则用户改完设置、下次加载就被改回去。
+    supportsImageInput: value.supportsImageInput === true
   };
 }
 
@@ -117,7 +110,6 @@ export function createLegacyModelConfig(source: Record<string, unknown>): ModelC
   const legacyProviderId = normalizeModelProviderId(source.modelProviderId);
   const legacyPresetId = resolveModelPresetId(source.modelPresetId, legacyModel, legacyBaseUrl, legacyProviderId)
     ?? DEFAULT_MODEL_PRESET_ID;
-  const legacyPreset = resolveModelPreset(legacyPresetId);
   const reasoningCompatibilityMode = legacyProviderId === "mimo" ? "mimo" : "none";
 
   return {
@@ -130,7 +122,8 @@ export function createLegacyModelConfig(source: Record<string, unknown>): ModelC
     baseUrl: legacyBaseUrl,
     reasoningEnabled: reasoningCompatibilityMode === "mimo" && source.reasoningMode !== "off",
     reasoningCompatibilityMode,
-    supportsImageInput: legacyPreset?.supportsImageInput === true
+    // 旧数据没有开关时按关闭处理（默认关闭口径，2026-11-27）。
+    supportsImageInput: source.supportsImageInput === true
   };
 }
 
@@ -171,16 +164,33 @@ export function getProviderLabel(providerId: ModelProviderId, fallbackLabel?: st
   return resolveProviderPreset(providerId)?.label ?? (fallbackLabel?.trim() || "当前服务商");
 }
 
+export interface ProviderFormDefaults {
+  providerLabel: string;
+  baseUrl: string;
+  model: string;
+  modelPlaceholder: string;
+}
+
+/**
+ * 新增模型表单的服务商默认值。
+ *
+ * 模型 ID 一律留空：服务商只决定名称与接口地址，模型由用户自己填。
+ * 自定义服务商没有可预填内容（名称、地址也留空）；`modelPlaceholder`
+ * 只是输入框示例，不写入草稿。
+ */
+export function resolveProviderFormDefaults(providerId: ModelProviderId): ProviderFormDefaults {
+  const provider = resolveProviderPreset(providerId) ?? MODEL_PROVIDER_PRESETS[0];
+  const isCustom = provider.id === "custom";
+  return {
+    providerLabel: isCustom ? "" : provider.label,
+    baseUrl: isCustom ? "" : provider.baseUrl,
+    model: "",
+    modelPlaceholder: `例如：${provider.defaultModel}`
+  };
+}
+
 export function providerSupportsNativeReasoning(providerId: ModelProviderId): boolean {
   return resolveProviderPreset(providerId)?.supportsReasoning === true;
-}
-
-export function getModelPresetById(presetId: string | null | undefined): ModelPreset | null {
-  return resolveModelPreset(presetId);
-}
-
-export function getModelPresetsForProvider(providerId: ModelProviderId): ModelPreset[] {
-  return MODEL_PRESETS.filter((preset) => preset.providerId === providerId);
 }
 
 export function buildResolvedModelConfigMap(modelConfigs: ModelConfigRecord[]): Map<string, ResolvedModelConfig> {

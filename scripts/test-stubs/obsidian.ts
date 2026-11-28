@@ -55,6 +55,41 @@ export class Notice {
   ) {}
 }
 
+/** 测试桩：只提供链式配置与可点击按钮元素，不模拟宿主样式。 */
+export class ButtonComponent {
+  buttonEl = {
+    addEventListener: () => undefined,
+    setAttr: () => undefined,
+    disabled: false,
+    addClass: () => undefined,
+    removeClass: () => undefined
+  };
+
+  setButtonText(_text: string): this {
+    return this;
+  }
+
+  setClass(_cls: string): this {
+    return this;
+  }
+
+  setCta(): this {
+    return this;
+  }
+
+  setWarning(): this {
+    return this;
+  }
+
+  setDisabled(_disabled: boolean): this {
+    return this;
+  }
+
+  onClick(_callback: (event: MouseEvent) => unknown): this {
+    return this;
+  }
+}
+
 export class TFile {
   path = "";
   basename = "";

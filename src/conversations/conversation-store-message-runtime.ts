@@ -1,4 +1,6 @@
+import { trimTextAfterSidetActionBlock } from "../agent/actions/agent-tool-protocol";
 import { UNTITLED_CONVERSATION_TITLE } from "../constants";
+import { getAssistantDisplayText } from "./assistant-visible-text";
 import { makeId } from "../shared/paths";
 import { now } from "../shared/time";
 import type {
@@ -68,17 +70,31 @@ function shouldInheritAnswerVariants(message: MessageRecord | undefined): messag
   return message.status === "done" || (message.answerVariants?.length ?? 0) > 0;
 }
 
-/** Provider 只应看到当前版本；历史版本留在本地消息上。 */
+/**
+ * Provider 只应看到当前版本的最终回答；历史版本留在本地消息上。
+ * 事件流消息的 `message.text` 还包含动作之间的过程正文，不能整条发给模型。
+ */
 function toProviderMessage(message: MessageRecord): MessageRecord {
-  if (!message.answerVariants && message.activeAnswerVariantIndex === undefined) {
+  const visibleText = message.role === "assistant"
+    ? getAssistantDisplayText(message)
+    : message.text;
+  if (
+    visibleText === message.text
+    && !message.answerVariants
+    && message.activeAnswerVariantIndex === undefined
+    && message.agentAction === undefined
+  ) {
     return message;
   }
   const {
     answerVariants: _answerVariants,
     activeAnswerVariantIndex: _activeAnswerVariantIndex,
+    agentAction: _agentAction,
     ...providerMessage
   } = message;
-  return providerMessage;
+  return visibleText === message.text
+    ? providerMessage
+    : { ...providerMessage, text: visibleText };
 }
 
 export class ConversationStoreMessageRuntime {
@@ -126,6 +142,19 @@ export class ConversationStoreMessageRuntime {
     this.options.emitStoreChange();
   }
 
+  updateMessageAgentAction(
+    conversationId: string,
+    messageId: string,
+    agentAction: MessageRecord["agentAction"]
+  ): void {
+    const conversation = this.options.requireConversation(conversationId);
+    const message = this.options.requireMessage(conversation, messageId);
+    message.agentAction = agentAction ?? undefined;
+    conversation.updatedAt = now();
+    this.options.scheduleSave(conversationId);
+    this.options.emitStoreChange();
+  }
+
   async beginAssistantMessage(
     conversationId: string,
     options: { reasoningLabel?: string; variantOfMessageId?: string } = {}
@@ -144,6 +173,7 @@ export class ConversationStoreMessageRuntime {
       createdAt: now(),
       status: "streaming",
       reasoningLabel: options.reasoningLabel?.trim() || undefined,
+      processStreamVersion: 1,
       answerVariants: inheritedVariants,
       activeAnswerVariantIndex: inheritedVariants?.length
     };
@@ -281,6 +311,7 @@ export class ConversationStoreMessageRuntime {
   async finishAssistantMessage(conversationId: string, messageId: string): Promise<void> {
     const conversation = this.options.requireConversation(conversationId);
     const message = this.options.requireMessage(conversation, messageId);
+    message.text = trimTextAfterSidetActionBlock(message.text);
     message.status = "done";
     message.errorText = undefined;
     conversation.updatedAt = now();
@@ -517,7 +548,10 @@ export class ConversationStoreMessageRuntime {
         label: normalizedLabel,
         display: normalizedDisplay,
         group: normalizedGroup,
-        groupLabel: normalizedGroupLabel
+        groupLabel: normalizedGroupLabel,
+        // 面板第一次出现时记下推理 / 正文已经写到哪里，渲染层据此把事件插回原位。
+        reasoningBefore: message.reasoningText?.length ?? 0,
+        textBefore: message.text.length
       };
       message.metaPanels.push(targetPanel);
       return targetPanel;

@@ -64,6 +64,9 @@ export function openConversationRowMenu(
       if (menuItem.icon) {
         item.setIcon(menuItem.icon);
       }
+      if (menuItem.danger) {
+        item.setWarning(true);
+      }
     });
   }
 
@@ -115,6 +118,9 @@ export function openFolderRowMenu(
         .onClick(menuItem.onSelect);
       if (menuItem.icon) {
         item.setIcon(menuItem.icon);
+      }
+      if (menuItem.danger) {
+        item.setWarning(true);
       }
     });
   }

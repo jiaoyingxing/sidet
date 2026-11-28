@@ -27,16 +27,26 @@ function assertPublicCommandCatalog() {
   const commandIds = [...source.matchAll(/this\.addCommand\(\{\s*id:\s*"([^"]+)"/g)]
     .map((match) => match[1]);
 
-  assert.deepEqual(commandIds, [
-    "open-sidet-workspace",
-    "open-sidet-conversation-list",
-    "new-sidet-conversation",
-    "export-current-sidet-conversation",
-    "insert-active-note-into-sidet-draft",
-    "insert-active-selection-into-sidet-draft",
-    "create-knowledge-base-index-for-folder",
-    "generate-wiki-memory-from-current-sidet-conversation"
-  ]);
+  // 8 条公共产品命令之外，只允许显式登记的排障命令；新增产品意图仍然只能进这 8 条。
+  const diagnosticCommandIds = ["export-mobile-input-diagnostic"];
+  assert.deepEqual(
+    commandIds.filter((id) => !diagnosticCommandIds.includes(id)),
+    [
+      "open-sidet-workspace",
+      "open-sidet-conversation-list",
+      "new-sidet-conversation",
+      "export-current-sidet-conversation",
+      "insert-active-note-into-sidet-draft",
+      "insert-active-selection-into-sidet-draft",
+      "create-knowledge-base-index-for-folder",
+      "generate-wiki-memory-from-current-sidet-conversation"
+    ]
+  );
+  assert.deepEqual(
+    commandIds.filter((id) => diagnosticCommandIds.includes(id)),
+    diagnosticCommandIds,
+    "diagnostic commands must be explicitly allowlisted"
+  );
   assert.match(source, /id:\s*"open-sidet-workspace"[\s\S]*?name:\s*"打开 Sidet"/);
   assert.match(source, /id:\s*"create-knowledge-base-index-for-folder"[\s\S]*?name:\s*"将文件夹设为知识库"/);
   assert.match(source, /id:\s*"generate-wiki-memory-from-current-sidet-conversation"[\s\S]*?name:\s*"整理当前内容到知识库"/);

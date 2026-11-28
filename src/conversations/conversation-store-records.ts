@@ -295,6 +295,7 @@ function cloneMessage(message: MessageRecord): MessageRecord {
       sources: panel.sources?.map((source) => ({ ...source }))
     })),
     sources: message.sources?.map((source) => ({ ...source })),
+    agentAction: message.agentAction ? { ...message.agentAction } : undefined,
     answerVariants: message.answerVariants?.map((variant) => ({
       ...variant,
       metaPanels: variant.metaPanels?.map((panel) => ({
@@ -485,6 +486,13 @@ function normalizeMetaPanel(panel: unknown): MessageMetaPanel | null {
   const groupLabel = typeof candidate.groupLabel === "string" && candidate.groupLabel.trim()
     ? candidate.groupLabel.trim()
     : undefined;
+  // 事件流边界必须随 panel 一起保留；重建时丢掉会让新消息重启后退回旧分组汇总。
+  const reasoningBefore = typeof candidate.reasoningBefore === "number"
+    ? candidate.reasoningBefore
+    : undefined;
+  const textBefore = typeof candidate.textBefore === "number"
+    ? candidate.textBefore
+    : undefined;
   let sourcesChanged = false;
   const sources = Array.isArray(candidate.sources)
     ? candidate.sources
@@ -525,6 +533,8 @@ function normalizeMetaPanel(panel: unknown): MessageMetaPanel | null {
     && display === candidate.display
     && group === candidate.group
     && groupLabel === candidate.groupLabel
+    && reasoningBefore === candidate.reasoningBefore
+    && textBefore === candidate.textBefore
     && !sourcesChanged
     && sources?.length === candidate.sources?.length
   ) {
@@ -538,7 +548,9 @@ function normalizeMetaPanel(panel: unknown): MessageMetaPanel | null {
     sources: sources && sources.length > 0 ? sources : undefined,
     display,
     group,
-    groupLabel
+    groupLabel,
+    reasoningBefore,
+    textBefore
   };
 }
 

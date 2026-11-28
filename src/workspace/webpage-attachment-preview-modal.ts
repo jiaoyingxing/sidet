@@ -1,5 +1,6 @@
-import { Component, MarkdownRenderer, Modal, Notice } from "obsidian";
+import { ButtonComponent, Component, MarkdownRenderer, Modal, Notice } from "obsidian";
 import { extractWebpageAttachmentMarkdown } from "../context/webpage-attachment-markdown";
+import { createSidetModalFooter } from "../shared/modal/sidet-modal-shell";
 import type { WebpageMessageAttachment } from "../types";
 import type { WorkspaceController } from "./workspace-controller";
 
@@ -15,12 +16,9 @@ export class WebpageAttachmentPreviewModal extends Modal {
 
   override onOpen(): void {
     this.modalEl.addClass("sidet-webpage-preview-modal");
+    this.titleEl.setText(this.attachment.name);
     this.contentEl.empty();
 
-    this.contentEl.createEl("h2", {
-      cls: "sidet-agent-preview-title",
-      text: this.attachment.name
-    });
     this.contentEl.createDiv({
       cls: "sidet-agent-preview-source",
       text: this.attachment.url
@@ -36,33 +34,27 @@ export class WebpageAttachmentPreviewModal extends Modal {
       });
     }
 
-    const actionsEl = this.contentEl.createDiv({ cls: "sidet-agent-preview-actions" });
-    const closeButtonEl = actionsEl.createEl("button", {
-      cls: "mod-muted",
-      text: "关闭"
-    });
-    closeButtonEl.type = "button";
-    closeButtonEl.addEventListener("click", () => {
-      this.close();
-    });
+    const actionsEl = createSidetModalFooter(this.contentEl);
+    new ButtonComponent(actionsEl)
+      .setButtonText("关闭")
+      .setClass("mod-cancel")
+      .onClick(() => {
+        this.close();
+      });
 
-    const openButtonEl = actionsEl.createEl("button", {
-      text: "打开原网页"
-    });
-    openButtonEl.type = "button";
-    openButtonEl.addEventListener("click", () => {
-      this.openOriginalPage();
-    });
+    new ButtonComponent(actionsEl)
+      .setButtonText("打开原网页")
+      .onClick(() => {
+        this.openOriginalPage();
+      });
 
-    const saveButtonEl = actionsEl.createEl("button", {
-      cls: "mod-cta",
-      text: "保存为 Markdown"
-    });
-    saveButtonEl.type = "button";
-    saveButtonEl.addEventListener("click", () => {
-      this.close();
-      void this.controller.openCreateWebpageClipPreview(this.attachment);
-    });
+    new ButtonComponent(actionsEl)
+      .setButtonText("保存为 Markdown")
+      .setCta()
+      .onClick(() => {
+        this.close();
+        void this.controller.openCreateWebpageClipPreview(this.attachment);
+      });
   }
 
   override onClose(): void {

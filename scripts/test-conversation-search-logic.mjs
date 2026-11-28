@@ -19,7 +19,10 @@ async function loadBundledModule(relativePath) {
     format: "esm",
     platform: "node",
     outfile,
-    logLevel: "silent"
+    logLevel: "silent",
+    alias: {
+      obsidian: path.join(rootDir, "scripts", "test-stubs", "obsidian.ts")
+    }
   });
 
   return import(`${pathToFileURL(outfile).href}?t=${Date.now()}`);

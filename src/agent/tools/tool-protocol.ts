@@ -11,13 +11,15 @@ import type {
  * 只读工具协议（第一步）：
  *
  * ```sidet-tool
- * tool: search_notes | read_note | note_links | wiki_memory
+ * tool: search_notes | read_note | note_links | wiki_memory | web_research
  * query: ...
  * ```
  *
  * 字段沿用现役协议的单行 `key: value` 写法；一次回复只解析第一个工具块。
  * 未知工具、缺必填字段或空块都按 malformed 处理（parse 返回 null）。
+ * `web_research` 是否进入本轮注册表由调用方决定，协议层只负责解析。
  */
+const TOOL_BLOCK_OPENER_PATTERN = /```sidet-tool(?!-)[ \t]*\r?\n/i;
 const TOOL_BLOCK_PATTERN = /```sidet-tool(?!-)[ \t]*\r?\n([\s\S]*?)```/i;
 const TOOL_RESULT_BLOCK_PATTERN = /```sidet-tool-result[ \t]*\r?\n([\s\S]*?)```/i;
 
@@ -27,7 +29,8 @@ const REQUIRED_FIELD_BY_TOOL: Record<AgentToolName, "query" | "path"> = {
   search_notes: "query",
   read_note: "path",
   note_links: "path",
-  wiki_memory: "query"
+  wiki_memory: "query",
+  web_research: "query"
 };
 
 function parseHeaderFields(headerText: string): Record<string, string> {
@@ -83,8 +86,16 @@ export function parseAgentToolInvocation(markdown: string): AgentToolInvocation 
   };
 }
 
+/** 完整工具块（有闭合围栏）；流式提前停止只能靠它，不能靠「出现 opener」。 */
+export function isAgentToolInvocationBlockComplete(markdown: string): boolean {
+  return TOOL_BLOCK_PATTERN.test(markdown);
+}
+
 export function isAgentToolInvocationMalformed(markdown: string): boolean {
-  return TOOL_BLOCK_PATTERN.test(markdown) && parseAgentToolInvocation(markdown) === null;
+  // 出现协议开头但没闭合（max_tokens / 网络中断最常见）也要进修复路径，
+  // 否则可见文本被隐藏后用户只会看到「当前没有得到可显示的回复」。
+  return TOOL_BLOCK_OPENER_PATTERN.test(markdown)
+    && parseAgentToolInvocation(markdown) === null;
 }
 
 export function parseAgentToolResultBlock(markdown: string): AgentToolResultBlock | null {

@@ -485,6 +485,14 @@ export class ConversationStore {
     this.messageRuntime.updateMessageKnowledgeBaseRouting(conversationId, messageId, knowledgeBaseRouting);
   }
 
+  updateMessageAgentAction(
+    conversationId: string,
+    messageId: string,
+    agentAction: MessageRecord["agentAction"]
+  ): void {
+    this.messageRuntime.updateMessageAgentAction(conversationId, messageId, agentAction);
+  }
+
   async beginAssistantMessage(
     conversationId: string,
     options: { reasoningLabel?: string; variantOfMessageId?: string } = {}

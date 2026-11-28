@@ -23,7 +23,7 @@ async function loadAgentToolsHarness() {
         `export { VaultToolService } from "./src/agent/tools/vault-tool-service";`,
         `export * from "./src/agent/tools/tool-protocol";`,
         `export { AGENT_TOOL_NAMES } from "./src/agent/tools/tool-types";`,
-        `export { AGENT_TOOL_DEFINITIONS, getAgentToolDefinition } from "./src/agent/tools/tool-registry";`,
+        `export { AGENT_TOOL_DEFINITIONS, getAgentToolDefinition, resolveAgentToolDefinitions } from "./src/agent/tools/tool-registry";`,
         `export { stripSidetProtocolBlocks } from "./src/agent/web-search/sidet-protocol";`,
         `export { TFile, Vault, MetadataCache } from "obsidian";`
       ].join("\n"),
@@ -182,6 +182,15 @@ function assertMalformedInvocations(protocol) {
 
   assert.equal(protocol.parseAgentToolInvocation("没有工具块"), null);
   assert.equal(protocol.isAgentToolInvocationMalformed("没有工具块"), false);
+
+  // 截断型协议失败：有 opener、没有闭合围栏，也必须进修复路径。
+  const unclosed = [
+    "```sidet-tool",
+    "tool: read_note",
+    "path: Projects/Alpha.md"
+  ].join("\n");
+  assert.equal(protocol.parseAgentToolInvocation(unclosed), null);
+  assert.equal(protocol.isAgentToolInvocationMalformed(unclosed), true);
 }
 
 function assertResultBlockProtocol(protocol) {
@@ -248,7 +257,7 @@ function assertProtocolStrip(protocol) {
 }
 
 function assertToolRegistry(Harness) {
-  const expectedNames = ["search_notes", "read_note", "note_links", "wiki_memory"];
+  const expectedNames = ["search_notes", "read_note", "note_links", "wiki_memory", "web_research"];
   assert.deepEqual(
     [...Harness.AGENT_TOOL_NAMES],
     expectedNames,
@@ -265,7 +274,11 @@ function assertToolRegistry(Harness) {
     assert.ok(definition, `${name} should have a definition`);
     assert.equal(definition.name, name);
     assert.equal(definition.readOnly, true, `${name} should be read-only`);
-    assert.equal(definition.sideEffectScope, "none", `${name} should declare no side effects`);
+    assert.equal(
+      definition.sideEffectScope,
+      name === "web_research" ? "network" : "none",
+      `${name} should declare its side effect scope`
+    );
     assert.ok(
       Number.isFinite(definition.timeoutMs) && definition.timeoutMs > 0,
       `${name} should declare a positive execution timeout`
@@ -283,6 +296,36 @@ function assertToolRegistry(Harness) {
     assert.equal(Harness.isAgentToolName(name), true);
   }
   assert.equal(Harness.isAgentToolName("delete_note"), false);
+
+  const vaultOnly = Harness.resolveAgentToolDefinitions({ webResearch: false });
+  assert.equal(
+    vaultOnly.web_research,
+    undefined,
+    "auto web search off should drop the web tool from the turn table"
+  );
+  assert.deepEqual(
+    Object.keys(vaultOnly).sort(),
+    ["search_notes", "read_note", "note_links", "wiki_memory"].sort()
+  );
+  const withWeb = Harness.resolveAgentToolDefinitions({ webResearch: true });
+  assert.ok(withWeb.web_research, "auto web search on should expose the web tool");
+  assert.equal(withWeb.search_notes.name, "search_notes");
+}
+
+/**
+ * 联网工具只由对话运行时的组合执行器承接；vault 服务命中只说明误路由，
+ * 必须给出错误结果而不是静默成功或抛异常。
+ */
+async function assertWebToolMisroute(service) {
+  const result = await service.execute({
+    tool: "web_research",
+    query: "今天的新闻",
+    path: null,
+    heading: null,
+    limit: null
+  });
+  assert.equal(result.status, "error");
+  assert.match(result.content, /联网工具需要在对话运行时执行/);
 }
 
 async function assertSearchNotes(service) {
@@ -701,6 +744,7 @@ async function main() {
     await assertNoteLinks(service);
     await assertWikiMemory(Harness, app);
     await assertExecutionToResultBlock(Harness, service);
+    await assertWebToolMisroute(service);
 
     console.log("agent tools logic test passed");
   } finally {

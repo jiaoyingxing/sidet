@@ -1,5 +1,6 @@
 import { App, ButtonComponent, Modal, SearchComponent, Setting, setIcon, setTooltip } from "obsidian";
 import { UNTITLED_CONVERSATION_TITLE } from "../constants";
+import { createSidetModalFooter } from "../shared/modal/sidet-modal-shell";
 import type { ConversationSummary } from "../types";
 import { WorkspaceController } from "../workspace/workspace-controller";
 
@@ -47,17 +48,16 @@ class DeleteArchivedConversationConfirmModal extends Modal {
       text: "删除后将无法恢复。"
     });
 
-    const actions = new Setting(this.contentEl);
-    actions.setClass("sidet-model-config-actions-setting");
-    actions.infoEl.remove();
+    const actions = createSidetModalFooter(this.contentEl);
 
-    new ButtonComponent(actions.controlEl)
+    new ButtonComponent(actions)
       .setButtonText("取消")
+      .setClass("mod-cancel")
       .onClick(() => {
         this.close();
       });
 
-    new ButtonComponent(actions.controlEl)
+    new ButtonComponent(actions)
       .setWarning()
       .setButtonText("删除")
       .onClick(() => {

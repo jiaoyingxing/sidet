@@ -9,6 +9,7 @@ import {
   type App
 } from "obsidian";
 import type SidetPlugin from "../main";
+import { createSidetModalFooter } from "../shared/modal/sidet-modal-shell";
 import type { ModelConfigRecord } from "../types";
 import { getProviderLabel } from "./model-configs";
 import { ModelConfigSetupModal } from "./model-config-setup-modal";
@@ -42,10 +43,13 @@ function createIconActionButton(
 }
 
 class DeleteModelConfigConfirmModal extends Modal {
+  private resolved = false;
+
   constructor(
     app: App,
     private readonly modelName: string,
-    private readonly onConfirm: () => Promise<void>
+    private readonly onConfirm: () => Promise<void>,
+    private readonly onResolve: (confirmed: boolean) => void
   ) {
     super(app);
   }
@@ -61,32 +65,75 @@ class DeleteModelConfigConfirmModal extends Modal {
       text: "正在使用这条模型的对话会回退到当前默认模型。"
     });
 
-    const actions = new Setting(this.contentEl);
-    actions.setClass("sidet-model-config-actions-setting");
-    actions.infoEl.remove();
-
-    new ButtonComponent(actions.controlEl)
+    const footerEl = createSidetModalFooter(this.contentEl);
+    new ButtonComponent(footerEl)
       .setButtonText("取消")
+      .setClass("mod-cancel")
       .onClick(() => {
         this.close();
       });
 
-    new ButtonComponent(actions.controlEl)
+    const deleteButton = new ButtonComponent(footerEl)
       .setWarning()
       .setButtonText("删除")
-      .onClick(() => {
-        void this.confirm();
+      .onClick(async () => {
+        deleteButton.setDisabled(true);
+        try {
+          await this.onConfirm();
+          this.finish(true);
+          this.close();
+        } catch (error) {
+          // 删除失败时不让确认框悬空：关闭并把 false 交还调用方，由列表行保持原状。
+          const message = error instanceof Error ? error.message.trim() : "";
+          new Notice(message ? `删除失败：${message}` : "删除失败，请稍后重试。", 3600);
+          this.finish(false);
+          this.close();
+        } finally {
+          deleteButton.setDisabled(false);
+        }
       });
   }
 
   override onClose(): void {
     this.contentEl.empty();
+    this.finish(false);
   }
 
-  private async confirm(): Promise<void> {
-    await this.onConfirm();
-    this.close();
+  private finish(confirmed: boolean): void {
+    if (this.resolved) {
+      return;
+    }
+    this.resolved = true;
+    this.onResolve(confirmed);
   }
+}
+
+/**
+ * 删除模型项：列表行与编辑弹窗共用。至少保留一个模型；确认后落库并刷新列表。
+ * 返回是否真的删除，供弹窗内的删除行决定要不要关闭自身。
+ */
+function requestDeleteModelConfig(
+  plugin: SidetPlugin,
+  secrets: SecretStorageService,
+  config: ModelConfigRecord,
+  refresh: () => void
+): Promise<boolean> {
+  if (plugin.settings.modelConfigs.length <= 1) {
+    new Notice("至少保留一个模型。", 2800);
+    return Promise.resolve(false);
+  }
+
+  return new Promise((resolve) => {
+    new DeleteModelConfigConfirmModal(plugin.app, config.model, async () => {
+      plugin.settings.modelConfigs = plugin.settings.modelConfigs.filter((item) => item.id !== config.id);
+      secrets.clearModelApiKey(config.id);
+      if (plugin.settings.defaultModelConfigId === config.id) {
+        plugin.settings.defaultModelConfigId = plugin.settings.modelConfigs[0]?.id ?? null;
+      }
+      await plugin.savePluginSettings();
+      refresh();
+    }, resolve).open();
+  });
 }
 
 export function renderProviderSettingsSection(
@@ -99,6 +146,27 @@ export function renderProviderSettingsSection(
   group.addSetting((setting) => {
     configureProviderModelRow(setting, plugin, secrets, rerender);
   });
+  group.addSetting((setting) => {
+    configureAutoWebSearchRow(setting, plugin);
+  });
+}
+
+/**
+ * 自动联网总开关：只控制普通对话的工具表里是否带联网工具。
+ * 手动「联网搜索」是叶子级显式模式，关闭这里也不影响它。
+ */
+export function configureAutoWebSearchRow(setting: Setting, plugin: SidetPlugin): void {
+  setting
+    .setName("允许模型自动联网")
+    .setDesc("需要最新或外部信息时，让模型自己联网搜索。关闭后仍可在对话里手动开启联网搜索。")
+    .addToggle((toggle) => {
+      toggle
+        .setValue(plugin.settings.webSearchMode === "auto")
+        .onChange(async (value) => {
+          plugin.settings.webSearchMode = value ? "auto" : "off";
+          await plugin.savePluginSettings();
+        });
+    });
 }
 
 /**
@@ -123,12 +191,28 @@ export function configureProviderModelRow(
           new ModelConfigSetupModal(plugin.app, {
             title: "新增模型",
             onSave: async ({ config, apiKey }) => {
-              plugin.settings.modelConfigs = [...plugin.settings.modelConfigs, config];
+              const previousApiKey = secrets.getModelApiKey(config.id);
+              if (!secrets.setModelApiKey(config.id, apiKey)) {
+                throw new Error("API Key 未能写入安全存储，请检查设备支持后重试。");
+              }
+              const previousConfigs = plugin.settings.modelConfigs;
+              const previousDefault = plugin.settings.defaultModelConfigId;
+              plugin.settings.modelConfigs = previousConfigs.some((item) => item.id === config.id)
+                ? previousConfigs.map((item) => item.id === config.id ? config : item)
+                : [...previousConfigs, config];
               if (!plugin.settings.defaultModelConfigId) {
                 plugin.settings.defaultModelConfigId = config.id;
               }
-              secrets.setModelApiKey(config.id, apiKey);
-              await plugin.savePluginSettings();
+              try {
+                await plugin.savePluginSettings();
+              } catch (error) {
+                // 落库失败时恢复内存快照，避免“弹窗说失败、设置里其实已经多了
+                // 一条”，重试时又追加成两条同 id 记录。
+                plugin.settings.modelConfigs = previousConfigs;
+                plugin.settings.defaultModelConfigId = previousDefault;
+                secrets.setModelApiKey(config.id, previousApiKey ?? "");
+                throw error;
+              }
               refresh();
             }
           }).open();
@@ -207,28 +291,26 @@ function renderModelConfigRow(
       initialConfig: config,
       initialApiKey: secrets.getModelApiKey(config.id),
       onSave: async ({ config: nextConfig, apiKey }) => {
-        plugin.settings.modelConfigs = plugin.settings.modelConfigs.map((item) => item.id === nextConfig.id ? nextConfig : item);
-        secrets.setModelApiKey(nextConfig.id, apiKey);
-        await plugin.savePluginSettings();
+        const previousApiKey = secrets.getModelApiKey(nextConfig.id);
+        if (!secrets.setModelApiKey(nextConfig.id, apiKey)) {
+          throw new Error("API Key 未能写入安全存储，请检查设备支持后重试。");
+        }
+        const previousConfigs = plugin.settings.modelConfigs;
+        plugin.settings.modelConfigs = previousConfigs.map((item) => (
+          item.id === nextConfig.id ? nextConfig : item
+        ));
+        try {
+          await plugin.savePluginSettings();
+        } catch (error) {
+          plugin.settings.modelConfigs = previousConfigs;
+          secrets.setModelApiKey(nextConfig.id, previousApiKey ?? "");
+          throw error;
+        }
         rerender();
       }
     }).open();
   });
   createIconActionButton(actionsEl, "trash-2", "删除", () => {
-    void (async () => {
-      if (plugin.settings.modelConfigs.length <= 1) {
-        new Notice("至少保留一个模型。", 2800);
-        return;
-      }
-      new DeleteModelConfigConfirmModal(plugin.app, config.model, async () => {
-        plugin.settings.modelConfigs = plugin.settings.modelConfigs.filter((item) => item.id !== config.id);
-        secrets.clearModelApiKey(config.id);
-        if (plugin.settings.defaultModelConfigId === config.id) {
-          plugin.settings.defaultModelConfigId = plugin.settings.modelConfigs[0]?.id ?? null;
-        }
-        await plugin.savePluginSettings();
-        rerender();
-      }).open();
-    })();
+    void requestDeleteModelConfig(plugin, secrets, config, rerender);
   }, "is-danger");
 }

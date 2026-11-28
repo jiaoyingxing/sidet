@@ -32,8 +32,9 @@ export class SecretStorageService {
     return this.readSecret(buildModelSecretId(modelConfigId));
   }
 
-  setModelApiKey(modelConfigId: string, value: string): void {
-    this.writeSecret(buildModelSecretId(modelConfigId), value);
+  /** 返回 false 表示密钥没有写入（设备不支持或写入抛错），调用方不得宣告保存成功。 */
+  setModelApiKey(modelConfigId: string, value: string): boolean {
+    return this.writeSecret(buildModelSecretId(modelConfigId), value);
   }
 
   clearModelApiKey(modelConfigId: string): void {
@@ -86,22 +87,24 @@ export class SecretStorageService {
     secretId: string,
     value: string,
     options: { showUnavailableNotice?: boolean } = {}
-  ): void {
+  ): boolean {
     const storage = this.resolveStorage();
     if (!storage) {
       if (options.showUnavailableNotice !== false) {
         this.showUnavailableNotice();
       }
-      return;
+      return false;
     }
 
     try {
       storage.setSecret(secretId, value.trim());
+      return true;
     } catch (error) {
       console.warn(`Sidet: failed to write secret "${secretId}"`, error);
       if (options.showUnavailableNotice !== false) {
         this.showUnavailableNotice();
       }
+      return false;
     }
   }
 

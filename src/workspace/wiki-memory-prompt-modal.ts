@@ -1,4 +1,5 @@
-import { Modal, Notice, setIcon, TFile, WorkspaceLeaf } from "obsidian";
+import { ButtonComponent, Modal, Notice, setIcon, TFile, WorkspaceLeaf } from "obsidian";
+import { createSidetModalFooter } from "../shared/modal/sidet-modal-shell";
 import type { WorkspaceController } from "./workspace-controller";
 
 export interface WikiMemoryPromptOptions {
@@ -32,19 +33,11 @@ export class WikiMemoryPromptModal extends Modal {
   }
 
   override onOpen(): void {
-    this.containerEl.addClass("sidet-wiki-intake-modal-container");
     this.modalEl.addClass("sidet-wiki-intake-modal");
+    this.titleEl.setText(this.source.kind === "conversation" ? "整理这段对话" : "整理这篇笔记");
     this.contentEl.empty();
 
     const headerEl = this.contentEl.createDiv({ cls: "sidet-wiki-intake-header" });
-    headerEl.createDiv({
-      cls: "sidet-wiki-intake-eyebrow",
-      text: "知识库整理"
-    });
-    headerEl.createEl("h2", {
-      cls: "sidet-wiki-intake-title",
-      text: this.source.kind === "conversation" ? "整理这段对话" : "整理这篇笔记"
-    });
     headerEl.createDiv({
       cls: "sidet-wiki-intake-lead",
       text: this.source.kind === "conversation"
@@ -88,22 +81,18 @@ export class WikiMemoryPromptModal extends Modal {
       }
     });
 
-    const actionsEl = this.contentEl.createDiv({ cls: "sidet-wiki-intake-actions" });
-    const submitButtonEl = actionsEl.createEl("button", {
-      cls: "mod-cta",
-      text: "先看整理计划"
-    });
-    submitButtonEl.type = "button";
-    submitButtonEl.addEventListener("click", () => {
-      this.submit();
-    });
+    const actionsEl = createSidetModalFooter(this.contentEl);
+    new ButtonComponent(actionsEl)
+      .setButtonText("取消")
+      .setClass("mod-cancel")
+      .onClick(() => this.close());
 
-    const cancelButtonEl = actionsEl.createEl("button", {
-      cls: "mod-muted",
-      text: "取消"
-    });
-    cancelButtonEl.type = "button";
-    cancelButtonEl.addEventListener("click", () => this.close());
+    new ButtonComponent(actionsEl)
+      .setButtonText("先看整理计划")
+      .setCta()
+      .onClick(() => {
+        this.submit();
+      });
 
     window.setTimeout(() => {
       this.boundaryInputEl?.focus();

@@ -32,7 +32,16 @@ function findUnfinishedProtocolStart(rawContent: string): number | null {
   }
 
   const tail = rawContent.slice(lastFence);
-  return SIDET_PROTOCOL_PREFIX.startsWith(tail) ? lastFence : null;
+  if (!tail.startsWith("```")) {
+    return null;
+  }
+  const afterFence = tail.slice(3);
+  // 完整的三反引号是代码块闭合，不是未完成的协议头；只有后面跟着
+  // `sidet-` 的部分前缀时才隐藏，否则回答以代码块结尾会丢掉闭合围栏。
+  if (!afterFence) {
+    return null;
+  }
+  return "sidet-".startsWith(afterFence) ? lastFence : null;
 }
 
 export function computeDisplayableAnswerText(rawContent: string): string {

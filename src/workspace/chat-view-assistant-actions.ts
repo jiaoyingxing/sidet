@@ -1,8 +1,6 @@
-import { App, Menu, Notice, setIcon, type WorkspaceLeaf } from "obsidian";
-import { AgentActionExecutor, type AgentActionPreview } from "../agent/actions/agent-action";
-import { parseSidetToolActionPreview, stripSidetToolActionBlock } from "../agent/actions/agent-tool-protocol";
-import { stripSidetProtocolBlocks } from "../agent/web-search/sidet-protocol";
+import { App, ButtonComponent, Menu, Notice, setIcon, type WorkspaceLeaf } from "obsidian";
 import { PLUGIN_ID } from "../constants";
+import { getAssistantDisplayText } from "../conversations/assistant-visible-text";
 import type { ConversationRecord, MessageRecord } from "../types";
 import {
   classifyAssistantError,
@@ -13,6 +11,8 @@ import {
   type AnswerActionKind,
   type AnswerVersionInfo
 } from "./chat-view-answer-presentation";
+import { AgentActionCard } from "./agent-action-card";
+import { installSmoothDetailsToggle, openSmoothDetails } from "./details-smooth-toggle";
 import { findAssistantAnswerSources } from "./assistant-message-dom";
 import { createIconButton } from "./icon-button";
 import type { WorkspaceController } from "./workspace-controller";
@@ -31,12 +31,22 @@ interface ChatViewAssistantActionsOptions {
   leaf: WorkspaceLeaf;
   copyText: (text: string) => Promise<void>;
   renderMarkdown: (parentEl: HTMLElement, markdown: string) => void;
+  onCardToggle?: (expanded: boolean) => void;
+  onDetailsToggle?: (open: boolean) => void;
+  /** 用户主动切换回答版本前调用：在内容变化前记录「是否在底部」。 */
+  onBeforeUserContentChange?: () => void;
 }
 
 export class ChatViewAssistantActions {
-  private readonly executedInlineActionKeys = new Set<string>();
+  private readonly agentActionCard: AgentActionCard;
 
-  constructor(private readonly options: ChatViewAssistantActionsOptions) {}
+  constructor(private readonly options: ChatViewAssistantActionsOptions) {
+    this.agentActionCard = new AgentActionCard({
+      controller: options.controller,
+      renderMarkdown: options.renderMarkdown,
+      onToggle: options.onCardToggle
+    });
+  }
 
   renderAnswerSources(parentEl: HTMLElement, message: MessageRecord): void {
     const sources = message.sources ?? [];
@@ -59,6 +69,7 @@ export class ChatViewAssistantActions {
     if (existingEl?.getAttribute("data-sources-signature") === signature) {
       return;
     }
+    const wasOpen = existingEl?.open === true;
     existingEl?.remove();
 
     const summary = getSourceSummary(sources);
@@ -99,6 +110,15 @@ export class ChatViewAssistantActions {
         renderBody();
       }
     });
+    installSmoothDetailsToggle(detailsEl, {
+      bodyEl: listEl,
+      onToggle: this.options.onDetailsToggle
+    });
+    if (wasOpen) {
+      // 来源在自动联网过程中会继续增长；重建时保留用户已展开的状态。
+      detailsEl.open = true;
+      renderBody();
+    }
   }
 
   renderAnswerActions(
@@ -175,6 +195,7 @@ export class ChatViewAssistantActions {
 
   private async selectAnswerVariant(message: MessageRecord, index: number): Promise<void> {
     try {
+      this.options.onBeforeUserContentChange?.();
       await this.options.controller.selectAnswerVariant(this.options.leaf, message.id, index);
     } catch (error) {
       new Notice(error instanceof Error ? error.message : "切换回答版本失败。", 3600);
@@ -215,7 +236,7 @@ export class ChatViewAssistantActions {
     includeSources: boolean,
     buttonEl?: HTMLButtonElement
   ): Promise<void> {
-    let text = stripSidetToolActionBlock(stripSidetProtocolBlocks(message.text)).trim();
+    let text = getAssistantDisplayText(message).trim();
     if (!text) {
       return;
     }
@@ -276,7 +297,9 @@ export class ChatViewAssistantActions {
           if (!detailsEl) {
             return;
           }
-          detailsEl.open = true;
+          if (!openSmoothDetails(detailsEl)) {
+            detailsEl.open = true;
+          }
           detailsEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
         });
     });
@@ -308,36 +331,35 @@ export class ChatViewAssistantActions {
     }
 
     const actionsEl = cardEl.createDiv({ cls: "sidet-answer-error-actions" });
+    // 错误卡动作统一走宿主 ButtonComponent：尺寸、内边距、边框与阴影由宿主按钮规则负责。
     if (latest && actions.includes("open-settings")) {
-      const settingsButton = actionsEl.createEl("button", {
-        cls: "sidet-answer-error-action is-primary",
-        text: "检查模型设置"
-      });
-      settingsButton.type = "button";
-      settingsButton.addEventListener("click", () => this.openModelSettings());
+      const settingsButton = new ButtonComponent(actionsEl)
+        .setButtonText("检查模型设置")
+        .setCta()
+        .onClick(() => this.openModelSettings());
+      settingsButton.buttonEl.type = "button";
     }
     if (latest && actions.includes("retry")) {
-      const retryButton = actionsEl.createEl("button", {
-        cls: `sidet-answer-error-action${actions.includes("open-settings") ? "" : " is-primary"}`,
-        text: "重试"
-      });
-      retryButton.type = "button";
-      retryButton.addEventListener("click", () => {
-        retryButton.disabled = true;
-        void this.regenerateLatestAnswer().finally(() => {
-          retryButton.disabled = false;
+      const retryButton = new ButtonComponent(actionsEl)
+        .setButtonText("重试")
+        .onClick(() => {
+          retryButton.setDisabled(true);
+          void this.regenerateLatestAnswer().finally(() => {
+            retryButton.setDisabled(false);
+          });
         });
-      });
+      if (!actions.includes("open-settings")) {
+        retryButton.setCta();
+      }
+      retryButton.buttonEl.type = "button";
     }
     if (actions.includes("copy-error")) {
-      const copyButton = actionsEl.createEl("button", {
-        cls: "sidet-answer-error-action is-ghost",
-        text: "复制错误信息"
-      });
-      copyButton.type = "button";
-      copyButton.addEventListener("click", () => {
-        void this.options.copyText((message.errorText ?? message.text).trim());
-      });
+      const copyButton = new ButtonComponent(actionsEl)
+        .setButtonText("复制错误信息")
+        .onClick(() => {
+          void this.options.copyText((message.errorText ?? message.text).trim());
+        });
+      copyButton.buttonEl.type = "button";
     }
     if (canSwitchVersions) {
       this.renderAnswerVersionSwitcher(actionsEl, message, versionInfo);
@@ -358,59 +380,7 @@ export class ChatViewAssistantActions {
     if (message.role !== "assistant" || message.status !== "done") {
       return;
     }
-
-    const preview = parseSidetToolActionPreview(
-      message.text,
-      `AI 请求的文件动作 · ${conversation.title || "未命名对话"}`
-    );
-    if (!preview) {
-      return;
-    }
-
-    const actionKey = `${message.id}:${preview.kind}:${preview.targetPath}:${preview.content}`;
-    const cardEl = parentEl.createDiv({ cls: "sidet-agent-inline-action" });
-    const headerEl = cardEl.createDiv({ cls: "sidet-agent-inline-action-header" });
-    headerEl.createSpan({
-      cls: "sidet-agent-inline-action-title",
-      text: this.getInlineActionLabel(preview.kind)
-    });
-    headerEl.createSpan({
-      cls: "sidet-agent-inline-action-status",
-      text: this.executedInlineActionKeys.has(actionKey) ? "已执行" : "待确认"
-    });
-
-    cardEl.createDiv({
-      cls: "sidet-agent-inline-action-path",
-      text: preview.targetPath
-    });
-    const previewLabelEl = cardEl.createDiv({
-      cls: "sidet-agent-inline-action-preview-label",
-      text: preview.contentLabel ?? "写入内容预览"
-    });
-    previewLabelEl.setAttr("aria-hidden", "true");
-    const previewEl = cardEl.createEl("pre", {
-      cls: "sidet-agent-inline-action-preview"
-    });
-    previewEl.setAttr("tabindex", "0");
-    previewEl.setAttr("aria-label", "写入内容预览");
-    previewEl.createEl("code", {
-      text: preview.content
-    });
-    cardEl.createDiv({
-      cls: "sidet-agent-inline-action-note",
-      text: "确认后由 Sidet 写入 vault；目标路径和内容来自上方 AI 回复。"
-    });
-
-    const actionsEl = cardEl.createDiv({ cls: "sidet-agent-inline-action-actions" });
-    const confirmButtonEl = actionsEl.createEl("button", {
-      cls: "mod-cta",
-      text: this.executedInlineActionKeys.has(actionKey) ? "已执行" : preview.confirmLabel
-    });
-    confirmButtonEl.type = "button";
-    confirmButtonEl.disabled = this.executedInlineActionKeys.has(actionKey);
-    confirmButtonEl.addEventListener("click", () => {
-      void this.executeInlineToolAction(preview, actionKey, cardEl, confirmButtonEl);
-    });
+    this.agentActionCard.render(parentEl, conversation, message);
   }
 
   renderWikiMaintenancePlanAction(
@@ -466,50 +436,4 @@ export class ChatViewAssistantActions {
     });
   }
 
-  private async executeInlineToolAction(
-    preview: AgentActionPreview,
-    actionKey: string,
-    cardEl: HTMLElement,
-    confirmButtonEl: HTMLButtonElement
-  ): Promise<void> {
-    confirmButtonEl.disabled = true;
-    confirmButtonEl.setText("执行中…");
-    try {
-      const executor = new AgentActionExecutor(this.options.controller.getApp());
-      const result = await executor.execute(preview, {
-        targetPath: preview.targetPath,
-        content: preview.content
-      });
-      this.executedInlineActionKeys.add(actionKey);
-      cardEl.addClass("is-executed");
-      const statusEl = cardEl.querySelector(".sidet-agent-inline-action-status");
-      if (statusEl) {
-        statusEl.textContent = "已执行";
-      }
-      confirmButtonEl.setText("已执行");
-      new Notice(result.message, 3600);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "执行文件动作失败。";
-      confirmButtonEl.disabled = false;
-      confirmButtonEl.setText(preview.confirmLabel);
-      new Notice(message, 4200);
-    }
-  }
-
-  private getInlineActionLabel(kind: AgentActionPreview["kind"]): string {
-    switch (kind) {
-      case "create-note":
-        return "创建 Markdown 笔记";
-      case "append-note":
-        return "追加到 Markdown 笔记";
-      case "replace-note":
-        return "覆盖现有 Markdown 笔记";
-      case "replace-selection":
-        return "替换当前选区";
-      case "replace-section":
-        return "替换当前小节";
-      default:
-        return "文件动作";
-    }
-  }
 }

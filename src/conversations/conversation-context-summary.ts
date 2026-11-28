@@ -1,10 +1,9 @@
-import { stripSidetToolActionBlock } from "../agent/actions/agent-tool-protocol";
-import { stripSidetProtocolBlocks } from "../agent/web-search/sidet-protocol";
 import type {
   ConversationContextSummary,
   ConversationRecord,
   MessageRecord
 } from "../types";
+import { getAssistantDisplayText } from "./assistant-visible-text";
 
 /** 最近多少条消息保持原样，不进入摘要范围。 */
 export const CONTEXT_SUMMARY_RAW_MESSAGE_COUNT = 16;
@@ -75,7 +74,7 @@ export function buildContextSummaryInput(range: ContextSummaryRange): string {
 
   for (const message of range.messages) {
     const rawText = message.role === "assistant"
-      ? stripSidetToolActionBlock(stripSidetProtocolBlocks(message.text))
+      ? getAssistantDisplayText(message)
       : message.text;
     const text = rawText.replace(/\s+/g, " ").trim();
     if (text) {

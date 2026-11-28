@@ -81,6 +81,18 @@ export class ChatViewContextIntake {
     this.options.syncComposerButtons();
   }
 
+  clearDraftWebpageAttachments(): void {
+    const nextAttachments = this.draftAttachments.filter(
+      (attachment) => attachment.type !== "webpage"
+    );
+    if (nextAttachments.length === this.draftAttachments.length) {
+      return;
+    }
+    this.draftAttachments = nextAttachments;
+    this.syncDraftAttachmentChips();
+    this.options.syncComposerButtons();
+  }
+
   closeContextMenu(): void {
     this.contextMenuClose?.();
     this.contextMenuClose = null;

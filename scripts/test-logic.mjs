@@ -13,6 +13,8 @@ const scriptPaths = [
   path.join(rootDir, "scripts", "test-sidet-protocol-logic.mjs"),
   path.join(rootDir, "scripts", "test-agent-tools-logic.mjs"),
   path.join(rootDir, "scripts", "test-agent-tool-loop-logic.mjs"),
+  path.join(rootDir, "scripts", "test-agent-action-diff-logic.mjs"),
+  path.join(rootDir, "scripts", "test-agent-action-execute-logic.mjs"),
   path.join(rootDir, "scripts", "test-sidet-prompt-context-logic.mjs"),
   path.join(rootDir, "scripts", "test-knowledge-command-routing-logic.mjs"),
   path.join(rootDir, "scripts", "test-sidet-agent-prompts-logic.mjs"),
@@ -38,6 +40,7 @@ const scriptPaths = [
   path.join(rootDir, "scripts", "test-command-governance-logic.mjs"),
   path.join(rootDir, "scripts", "test-mobile-composer-layer-logic.mjs"),
   path.join(rootDir, "scripts", "test-mobile-keyboard-follow-logic.mjs"),
+  path.join(rootDir, "scripts", "test-mobile-input-probe-logic.mjs"),
   path.join(rootDir, "scripts", "test-mobile-scroll-momentum-logic.mjs"),
   path.join(rootDir, "scripts", "test-chat-draft-runtime-logic.mjs"),
   path.join(rootDir, "scripts", "test-chat-leaf-navigation-logic.mjs"),
@@ -46,7 +49,11 @@ const scriptPaths = [
   path.join(rootDir, "scripts", "test-browser-view-list-runtime-logic.mjs"),
   path.join(rootDir, "scripts", "test-local-assistant-stream-logic.mjs"),
   path.join(rootDir, "scripts", "test-secret-storage-logic.mjs"),
-  path.join(rootDir, "scripts", "test-settings-track-logic.mjs")
+  path.join(rootDir, "scripts", "test-settings-track-logic.mjs"),
+  path.join(rootDir, "scripts", "test-model-config-normalization-logic.mjs"),
+  path.join(rootDir, "scripts", "test-keyboard-inset-geometry-logic.mjs"),
+  path.join(rootDir, "scripts", "test-model-connectivity-logic.mjs"),
+  path.join(rootDir, "scripts", "test-modal-contract-logic.mjs")
 ];
 
 for (const scriptPath of scriptPaths) {

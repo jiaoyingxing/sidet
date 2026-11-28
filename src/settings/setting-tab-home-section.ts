@@ -7,6 +7,7 @@ import {
 } from "../constants";
 import { resolveRegisteredCommand, type RegisteredCommandInfo } from "../commands/command-registry";
 import type SidetPlugin from "../main";
+import { createSidetModalFooter } from "../shared/modal/sidet-modal-shell";
 import type { HomePinnedCommandSetting, UrlLauncherSetting } from "../types";
 import { HomePinnedCommandDragRuntime } from "./setting-tab-home-drag-runtime";
 import { HomeCommandPickerModal, HomeIconPickerModal } from "./setting-tab-home-picker-modals";
@@ -58,17 +59,16 @@ class DeleteSettingItemConfirmModal extends Modal {
       text: this.description
     });
 
-    const actions = new Setting(this.contentEl);
-    actions.setClass("sidet-model-config-actions-setting");
-    actions.infoEl.remove();
+    const actions = createSidetModalFooter(this.contentEl);
 
-    new ButtonComponent(actions.controlEl)
+    new ButtonComponent(actions)
       .setButtonText("取消")
+      .setClass("mod-cancel")
       .onClick(() => {
         this.close();
       });
 
-    new ButtonComponent(actions.controlEl)
+    new ButtonComponent(actions)
       .setWarning()
       .setButtonText("删除")
       .onClick(() => {

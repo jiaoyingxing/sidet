@@ -17,6 +17,8 @@ import type { AgentActionPreview } from "./agent-action";
 import { WikiKnowledgeIndex } from "../wiki/wiki-memory-index";
 import { buildNormalizedWikiMarkdown, normalizeWikiDraftMarkdown } from "../wiki/wiki-note-schema";
 import { buildFullSkillMarkdown, parseSkillDraft } from "../skills/skill-markdown";
+import { stripSidetActionAndFollowing } from "./agent-tool-protocol";
+import { stripSidetProtocolBlocks } from "../web-search/sidet-protocol";
 
 function normalizeMarkdown(text: string): string {
   return text.replace(/\r\n/g, "\n").trim();
@@ -37,7 +39,13 @@ function getLatestAssistantMessage(conversation: ConversationRecord): MessageRec
     if (message.role !== "assistant" || message.status !== "done" || !message.text.trim()) {
       continue;
     }
-    return message;
+    // 动作 / 工具协议块不能写进笔记：对话里的最近回复可能就是一张写入卡，
+    // 保存 / 追加 / 整理时必须只用用户实际看到的正文。
+    const text = stripSidetActionAndFollowing(stripSidetProtocolBlocks(message.text)).trim();
+    if (!text) {
+      return null;
+    }
+    return { ...message, text };
   }
 
   return null;

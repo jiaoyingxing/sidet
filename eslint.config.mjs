@@ -12,6 +12,9 @@ export default defineConfig([
       "scripts/**",
       "esbuild.config.mjs",
       "node_modules/**",
+      // .temp 是本轮诊断 / 一次性导出的本地临时区（不进 Git、不是构筑物），
+      // 里面的 .ts 快照不应参与商店扫描同款规则。
+      ".temp/**",
     ],
   },
   ...obsidianmd.configs.recommended,

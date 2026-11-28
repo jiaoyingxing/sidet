@@ -721,6 +721,168 @@ async function assertPatchedAssistantRenderCanStillRestorePreservedScroll(module
   );
 }
 
+function assertPinnedContentGrowthFollowsBottom(module) {
+  const windowHarness = installFakeWindow();
+  const { rendering, scrollHost, getPinnedToBottom } = createRendering(module);
+  rendering.resetContentHeightBaseline();
+  scrollHost.scrollTop = 800;
+  rendering.updatePinnedToBottom(40);
+  assert.equal(getPinnedToBottom(), true, "fixture should start pinned at the bottom");
+
+  scrollHost.scrollHeight = 1680;
+  rendering.handleContentResize();
+  windowHarness.flushFrames();
+
+  assert.equal(
+    scrollHost.scrollTop,
+    1280,
+    "expanded content must keep a pinned reader on the new bottom"
+  );
+  assert.equal(getPinnedToBottom(), true, "content growth must leave the reader pinned");
+}
+
+function assertUnpinnedContentGrowthKeepsReadingPosition(module) {
+  const windowHarness = installFakeWindow();
+  const { rendering, scrollHost, getPinnedToBottom } = createRendering(module);
+  rendering.resetContentHeightBaseline();
+  scrollHost.scrollTop = 300;
+  rendering.updatePinnedToBottom(40);
+  assert.equal(getPinnedToBottom(), false, "fixture should start away from the bottom");
+
+  scrollHost.scrollHeight = 1680;
+  rendering.handleContentResize();
+  windowHarness.flushFrames();
+
+  assert.equal(
+    scrollHost.scrollTop,
+    300,
+    "content growth must not pull a reader who is not pinned back to the bottom"
+  );
+  assert.equal(getPinnedToBottom(), false, "content growth must not change an unpinned reader state");
+}
+
+function assertContentShrinkAnchorsBottomSynchronously(module) {
+  const windowHarness = installFakeWindow();
+  const { rendering, scrollHost, getPinnedToBottom } = createRendering(module);
+  rendering.resetContentHeightBaseline();
+  scrollHost.scrollTop = 800;
+  rendering.updatePinnedToBottom(40);
+  assert.equal(getPinnedToBottom(), true, "fixture should start pinned at the bottom");
+
+  scrollHost.scrollHeight = 1000;
+  rendering.handleContentResize();
+  windowHarness.flushFrames();
+
+  assert.equal(
+    scrollHost.scrollTop,
+    600,
+    "shrinking content at the bottom must keep the bottom edge anchored"
+  );
+  assert.equal(getPinnedToBottom(), true, "content shrink must not change the reader state");
+}
+
+function assertSuppressedContentGrowthDoesNotFollowBottom(module) {
+  const windowHarness = installFakeWindow();
+  const { rendering, scrollHost, getPinnedToBottom } = createRendering(module);
+  rendering.resetContentHeightBaseline();
+  scrollHost.scrollTop = 800;
+  rendering.updatePinnedToBottom(40);
+  assert.equal(getPinnedToBottom(), true, "fixture should start pinned at the bottom");
+
+  rendering.suppressContentResizeFollow(500);
+  scrollHost.scrollHeight = 1680;
+  rendering.handleContentResize();
+  windowHarness.flushFrames();
+
+  assert.equal(
+    scrollHost.scrollTop,
+    800,
+    "a suppressed manual toggle must keep the current scroll position"
+  );
+  assert.equal(getPinnedToBottom(), true, "suppression must not flip the reader state");
+}
+
+function assertBottomFollowIntentSurvivesLayoutScrollEvents(module) {
+  const { rendering, scrollHost, getPinnedToBottom } = createRendering(module);
+  rendering.holdBottomFollowIntent(900);
+  assert.equal(getPinnedToBottom(), true, "holding the intent must pin the bottom");
+
+  // 内容展开 / 版本切换时浏览器夹紧产生的滚动事件与任何程序化写入都不匹配，
+  // 但它们不是用户滚动，不得把贴底意图翻掉。
+  scrollHost.scrollTop = 40;
+  assert.equal(
+    rendering.handleScroll(40),
+    true,
+    "layout-induced scrolls must be swallowed while the intent is held"
+  );
+  assert.equal(getPinnedToBottom(), true, "the pin must survive layout scrolls");
+
+  rendering.releaseBottomFollowIntent();
+  scrollHost.scrollTop = 120;
+  assert.equal(
+    rendering.handleScroll(120),
+    false,
+    "after a real gesture the scroll must be treated as a user scroll"
+  );
+}
+
+function assertContentGrowthAnchorsBottomSynchronously(module) {
+  const windowHarness = installFakeWindow();
+  const { rendering, scrollHost, getPinnedToBottom } = createRendering(module);
+  rendering.resetContentHeightBaseline();
+  scrollHost.scrollTop = 800;
+  rendering.updatePinnedToBottom(40);
+  assert.equal(getPinnedToBottom(), true, "fixture should start pinned at the bottom");
+
+  scrollHost.scrollHeight = 1680;
+  rendering.handleContentResize();
+
+  assert.equal(
+    scrollHost.scrollTop,
+    1280,
+    "content growth at the bottom must anchor synchronously so the bottom bar never moves"
+  );
+  windowHarness.flushFrames();
+  assert.equal(
+    scrollHost.scrollTop,
+    1280,
+    "the synchronous anchor must not leave a queued follow behind"
+  );
+
+  rendering.release();
+  assert.equal(
+    scrollHost.scrollTop,
+    1280,
+    "release after anchoring must not move the view"
+  );
+}
+
+function assertKeyboardPresentationAnchorsBottomSynchronously(module) {
+  const windowHarness = installFakeWindow();
+  const { rendering, scrollHost, getPinnedToBottom } = createRendering(module);
+  scrollHost.scrollTop = 0;
+  scrollHost.scrollHeight = 1500;
+  scrollHost.clientHeight = 400;
+  rendering.holdBottomFollowIntent(600);
+  rendering.requestBottomFollow("smooth");
+
+  scrollHost.scrollHeight = 1700;
+  rendering.anchorBottomForKeyboardPresentation();
+  assert.equal(
+    scrollHost.scrollTop,
+    1300,
+    "a keyboard reserved-space change must land on the new bottom in the same call"
+  );
+  assert.equal(getPinnedToBottom(), true);
+  windowHarness.flushFrames();
+  assert.equal(
+    scrollHost.scrollTop,
+    1300,
+    "the rigid keyboard anchor must cancel the queued smooth follow"
+  );
+  rendering.release();
+}
+
 async function main() {
   try {
     const assistantRenderingModule = await loadBundledModule("src/workspace/chat-view-assistant-rendering.ts");
@@ -728,6 +890,13 @@ async function main() {
     assertAfterSendRestoresBottomInRaf(assistantRenderingModule);
     assertFollowLatestUsesSnapshotPinnedState(assistantRenderingModule);
     assertRevealIntentSkipsBottomScroll(assistantRenderingModule);
+    assertPinnedContentGrowthFollowsBottom(assistantRenderingModule);
+    assertUnpinnedContentGrowthKeepsReadingPosition(assistantRenderingModule);
+    assertContentShrinkAnchorsBottomSynchronously(assistantRenderingModule);
+    assertSuppressedContentGrowthDoesNotFollowBottom(assistantRenderingModule);
+    assertContentGrowthAnchorsBottomSynchronously(assistantRenderingModule);
+    assertKeyboardPresentationAnchorsBottomSynchronously(assistantRenderingModule);
+    assertBottomFollowIntentSurvivesLayoutScrollEvents(assistantRenderingModule);
     assertQueueScrollIntentCancelsComposerRestore(conversationRuntimeModule);
     assertKnowledgeBaseRoutingUpdateInvalidatesConversationRender(conversationRuntimeModule);
     assertOlderAnswerVariantSwitchInvalidatesConversationRender(conversationRuntimeModule);

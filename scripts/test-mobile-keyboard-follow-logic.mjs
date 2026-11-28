@@ -99,7 +99,7 @@ function createClassList(initial = []) {
 
 function createStyle() {
   const values = new Map();
-  return {
+  const style = {
     setProperty(name, value) {
       values.set(name, value);
     },
@@ -110,6 +110,16 @@ function createStyle() {
       return values.get(name) ?? "";
     }
   };
+  Object.defineProperty(style, "transform", {
+    configurable: true,
+    get() {
+      return values.get("transform") ?? "";
+    },
+    set(value) {
+      values.set("transform", String(value));
+    }
+  });
+  return style;
 }
 
 function createElement(classNames, rect) {
@@ -134,6 +144,14 @@ function installRuntimeEnvironment() {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const originalPerformance = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "performance"
+  );
+  const originalGetComputedStyle = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "getComputedStyle"
+  );
   const windowTarget = new EventTarget();
   const documentTarget = new EventTarget();
   const visualViewportTarget = new EventTarget();
@@ -141,6 +159,7 @@ function installRuntimeEnvironment() {
   const frames = new Map();
   let nextTimerId = 1;
   let nextFrameId = 1;
+  let clockMs = 0;
 
   Object.assign(windowTarget, {
     innerWidth: 390,
@@ -162,6 +181,9 @@ function installRuntimeEnvironment() {
     },
     cancelAnimationFrame(id) {
       frames.delete(id);
+    },
+    getComputedStyle() {
+      return { paddingBottom: "34px" };
     },
     visualViewport: visualViewportTarget
   });
@@ -221,11 +243,27 @@ function installRuntimeEnvironment() {
       maxTouchPoints: 1
     }
   });
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => ({
+      paddingBottom: "34px",
+      getPropertyValue: () => ""
+    })
+  });
+  Object.defineProperty(globalThis, "performance", {
+    configurable: true,
+    value: {
+      now: () => clockMs
+    }
+  });
 
   return {
     windowTarget,
     documentTarget,
     visualViewportTarget,
+    advanceTime(ms) {
+      clockMs += Math.max(0, ms);
+    },
     setVisualViewportValues({ height, offsetTop }) {
       if (height !== undefined) {
         visualViewportTarget.height = height;
@@ -277,6 +315,20 @@ function installRuntimeEnvironment() {
         Object.defineProperty(globalThis, "navigator", originalNavigator);
       } else {
         delete globalThis.navigator;
+      }
+      if (originalPerformance) {
+        Object.defineProperty(globalThis, "performance", originalPerformance);
+      } else {
+        delete globalThis.performance;
+      }
+      if (originalGetComputedStyle) {
+        Object.defineProperty(
+          globalThis,
+          "getComputedStyle",
+          originalGetComputedStyle
+        );
+      } else {
+        delete globalThis.getComputedStyle;
       }
       delete globalThis.__SIDET_MOBILE_KEYBOARD_DIAGNOSTICS__;
       delete globalThis.__SIDET_MOBILE_KEYBOARD_PHASE_DIAGNOSTICS__;
@@ -1661,6 +1713,524 @@ function assertWorkspaceOwnershipLossDoesNotWaitForKeyboardHide(module) {
   }
 }
 
+function assertPresentationSettledFiresOnDidShow(module) {
+  const environment = installRuntimeEnvironment();
+  try {
+    const elements = createRuntimeElements();
+    const triggers = [];
+    const runtime = createRuntime(module, elements, {
+      onPresentationSettled: (trigger) => triggers.push(trigger)
+    });
+    runtime.bind();
+
+    dispatchKeyboard(environment.windowTarget, "keyboardDidShow", 320);
+    assert.deepEqual(
+      triggers,
+      [],
+      "a DidShow without focus must not settle a presentation"
+    );
+
+    environment.documentTarget.activeElement = elements.composerEl;
+    runtime.beginFocus();
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 320);
+    assert.deepEqual(
+      triggers,
+      [],
+      "WillShow alone is not a settled keyboard endpoint"
+    );
+
+    dispatchKeyboard(environment.windowTarget, "keyboardDidShow", 320);
+    assert.deepEqual(
+      triggers,
+      ["keyboardDidShow"],
+      "the Android endpoint settles on DidShow"
+    );
+    runtime.release();
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertIosDockSettleDefersPresentationSettled(module) {
+  const environment = installRuntimeEnvironment();
+  try {
+    const elements = createRuntimeElements({ ios: true });
+    const triggers = [];
+    const runtime = createRuntime(module, elements, {
+      onPresentationSettled: (trigger) => triggers.push(trigger)
+    });
+    runtime.bind();
+    environment.documentTarget.activeElement = elements.composerEl;
+    runtime.beginFocus();
+
+    dispatchKeyboard(environment.windowTarget, "keyboardDidShow", 306);
+    assert.deepEqual(
+      triggers,
+      [],
+      "iPhone must wait for the dock-settle passes before reporting the endpoint"
+    );
+    environment.flushFrames();
+    assert.deepEqual(
+      triggers,
+      [],
+      "one settle pass is not the final dock endpoint"
+    );
+    environment.flushFrames();
+    assert.deepEqual(
+      triggers,
+      ["keyboardDidShow"],
+      "the settled iPhone endpoint must notify exactly once"
+    );
+    runtime.release();
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertIosPanHandoffEmitsPresentationSettled(module) {
+  const environment = installRuntimeEnvironment();
+  try {
+    const elements = createRuntimeElements({ ios: true });
+    const triggers = [];
+    const runtime = createRuntime(module, elements, {
+      onPresentationSettled: (trigger) => triggers.push(trigger)
+    });
+    runtime.bind();
+    environment.documentTarget.activeElement = elements.composerEl;
+    runtime.beginFocus();
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 374);
+    assert.deepEqual(triggers, []);
+
+    environment.setVisualViewport({ height: 800, offsetTop: 187 });
+    assert.deepEqual(triggers, []);
+    environment.setVisualViewport({ height: 800, offsetTop: 374 });
+    assert.deepEqual(
+      triggers,
+      [],
+      "a host pan in progress must not report a settled endpoint"
+    );
+
+    environment.setVisualViewport({ height: 426, offsetTop: 0 }, "resize");
+    assert.deepEqual(
+      triggers,
+      ["visualViewport.resize.pan-handoff"],
+      "the pan handoff is the iPhone endpoint the view layer may follow"
+    );
+    runtime.release();
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertPresentationClosedFiresOnHide(module) {
+  const environment = installRuntimeEnvironment();
+  try {
+    const elements = createRuntimeElements();
+    let closed = 0;
+    const runtime = createRuntime(module, elements, {
+      onPresentationClosed: () => {
+        closed += 1;
+      }
+    });
+    runtime.bind();
+    environment.documentTarget.activeElement = elements.composerEl;
+    runtime.beginFocus();
+    assert.equal(closed, 0, "focus alone must not close a presentation");
+
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 320);
+    assert.equal(closed, 0, "WillShow must not report a closed presentation");
+
+    dispatchKeyboard(environment.windowTarget, "keyboardWillHide");
+    assert.equal(
+      closed,
+      1,
+      "hide must release the keyboard-state reserved space exactly once"
+    );
+
+    runtime.release();
+    assert.equal(
+      closed,
+      1,
+      "release after hide must not double-close the presentation"
+    );
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertOpeningAnimationEndRecomputesReservedSpace(module) {
+  const environment = installRuntimeEnvironment();
+  try {
+    const elements = createRuntimeElements();
+    let ended = 0;
+    const runtime = createRuntime(module, elements, {
+      onPresentationAnimationEnded: () => {
+        ended += 1;
+      }
+    });
+    runtime.bind();
+    environment.documentTarget.activeElement = elements.composerEl;
+    runtime.beginFocus();
+
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 320);
+    assert.equal(
+      ended,
+      0,
+      "the opening animation must not report its end immediately"
+    );
+    environment.flushTimers();
+    assert.equal(
+      ended,
+      1,
+      "the composer endpoint is final only after the surface animation ends"
+    );
+    runtime.release();
+    assert.equal(ended, 1, "release after the opening must not double-report");
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertContentKeyboardPaddingIsNeutralized(module) {
+  const environment = installRuntimeEnvironment();
+  try {
+    const elements = createRuntimeElements();
+    const runtime = createRuntime(module, elements);
+    runtime.bind();
+    environment.documentTarget.activeElement = elements.composerEl;
+    runtime.beginFocus();
+
+    assert.equal(
+      elements.contentEl.style.getPropertyValue("padding-bottom"),
+      "34px",
+      "the host keyboard padding must be replaced by the resting content padding"
+    );
+
+    runtime.release();
+    assert.equal(
+      elements.contentEl.style.getPropertyValue("padding-bottom"),
+      "",
+      "release must hand the content padding back to the host"
+    );
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertPresentationStartedFiresOnce(module) {
+  const environment = installRuntimeEnvironment();
+  try {
+    const elements = createRuntimeElements();
+    let started = 0;
+    const runtime = createRuntime(module, elements, {
+      onPresentationStarted: () => {
+        started += 1;
+      }
+    });
+    runtime.bind();
+    environment.documentTarget.activeElement = elements.composerEl;
+    runtime.beginFocus();
+    assert.equal(started, 0, "focus alone must not start a keyboard presentation");
+
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 320);
+    assert.equal(
+      started,
+      1,
+      "the content must start moving when the composer surface starts rising"
+    );
+
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 374);
+    dispatchKeyboard(environment.windowTarget, "keyboardDidShow", 374);
+    assert.equal(
+      started,
+      1,
+      "a confirmed or repeated show must not start a second presentation"
+    );
+    runtime.release();
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertLearnedKeyboardSurfaceDurationMatchesNativeAnimation(module) {
+  const environment = installRuntimeEnvironment();
+  try {
+    const elements = createRuntimeElements();
+    const runtime = createRuntime(module, elements);
+    runtime.bind();
+    environment.documentTarget.activeElement = elements.composerEl;
+    runtime.beginFocus();
+
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 320);
+    assert.equal(
+      elements.hostEl.style.getPropertyValue("--sidet-mobile-keyboard-host-duration"),
+      "250ms",
+      "the first presentation keeps the existing surface-height fallback"
+    );
+
+    environment.advanceTime(280);
+    dispatchKeyboard(environment.windowTarget, "keyboardDidShow", 320);
+
+    runtime.endFocus();
+    dispatchKeyboard(environment.windowTarget, "keyboardWillHide");
+    environment.advanceTime(280);
+    dispatchKeyboard(environment.windowTarget, "keyboardDidHide");
+    environment.flushTimers();
+
+    runtime.beginFocus();
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 320);
+    assert.equal(
+      elements.hostEl.style.getPropertyValue("--sidet-mobile-keyboard-host-duration"),
+      "280ms",
+      "the measured WillShow-to-DidShow time must drive the next surface animation"
+    );
+    runtime.release();
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertIosFirstPresentationUsesKeyboardLikeDuration(module) {
+  const environment = installRuntimeEnvironment();
+  try {
+    const elements = createRuntimeElements({ ios: true });
+    const runtime = createRuntime(module, elements);
+    runtime.bind();
+    environment.documentTarget.activeElement = elements.composerEl;
+    runtime.beginFocus();
+
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 374);
+    assert.equal(
+      elements.hostEl.style.getPropertyValue("--sidet-mobile-keyboard-host-duration"),
+      "320ms",
+      "the first iPhone presentation must cap the open duration for a crisper travel"
+    );
+
+    environment.advanceTime(300);
+    dispatchKeyboard(environment.windowTarget, "keyboardDidShow", 374);
+    environment.flushFrames();
+    environment.flushFrames();
+
+    runtime.endFocus();
+    dispatchKeyboard(environment.windowTarget, "keyboardWillHide");
+    assert.equal(
+      elements.hostEl.style.getPropertyValue("--sidet-mobile-keyboard-host-duration"),
+      "300ms",
+      "the legacy closing surface must reuse the learned keyboard rhythm"
+    );
+    environment.advanceTime(300);
+    dispatchKeyboard(environment.windowTarget, "keyboardDidHide");
+    environment.flushTimers();
+
+    runtime.beginFocus();
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 374);
+    assert.equal(
+      elements.hostEl.style.getPropertyValue("--sidet-mobile-keyboard-host-duration"),
+      "300ms",
+      "a later focus must reuse the learned opening duration when it is below the cap"
+    );
+    runtime.release();
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertLearnedSurfaceDurationIsClamped(module) {
+  assert.equal(module.normalizeLearnedKeyboardSurfaceDuration(40), 150);
+  assert.equal(module.normalizeLearnedKeyboardSurfaceDuration(360), 360);
+  assert.equal(module.normalizeLearnedKeyboardSurfaceDuration(900), 520);
+  assert.equal(
+    module.normalizeLearnedKeyboardSurfaceDuration(Number.NaN),
+    150,
+    "a missing measurement must fall back to the shortest usable duration"
+  );
+  assert.equal(module.easeOutQuart(0), 0);
+  assert.equal(module.easeOutQuart(0.5), 0.9375);
+  assert.equal(module.easeOutQuart(1), 1);
+  assert.equal(module.easeOutSine(0), 0);
+  assert.ok(
+    Math.abs(module.easeOutSine(0.5) - Math.SQRT1_2) < 1e-9,
+    "the closing curve must keep a more even mid-flight speed"
+  );
+  assert.equal(module.easeOutSine(1), 1);
+}
+
+function assertFramedOpeningDrivesComposerInOneFrame(module) {
+  const environment = installRuntimeEnvironment();
+  try {
+    const elements = createRuntimeElements();
+    const syncedVisualTops = [];
+    const runtime = createRuntime(module, elements, {
+      onPresentationFrame: (visualComposerTop) => {
+        syncedVisualTops.push(visualComposerTop);
+      }
+    });
+    runtime.bind();
+    environment.documentTarget.activeElement = elements.composerEl;
+    runtime.beginFocus();
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 320);
+
+    assert.equal(
+      runtime.isFramedOpeningActive(),
+      true,
+      "the opening must be driven frame-by-frame instead of a detached CSS animation"
+    );
+    assert.equal(
+      elements.hostEl.classList.contains("is-mobile-keyboard-host-framed"),
+      true
+    );
+    assert.match(
+      elements.composerEl.style.transform,
+      /^translate3d\(0, 256\.00px, 0\)$/,
+      "the composer must rise through its own compositor-friendly transform"
+    );
+    assert.equal(
+      syncedVisualTops.length,
+      1,
+      "the content must sync in the same frame as the first composer write"
+    );
+    assert.equal(
+      syncedVisualTops[0],
+      680 + 256,
+      "the first frame must report the resting visual top to the content"
+    );
+
+    environment.advanceTime(200);
+    environment.flushFrames();
+    const remaining = Number.parseFloat(
+      /translate3d\(0, (-?[\d.]+)px, 0\)/.exec(elements.composerEl.style.transform)?.[1]
+    );
+    assert.ok(
+      Number.isFinite(remaining) && remaining > 0 && remaining < 2,
+      `the quart easing must leave only a short tail, got ${remaining}`
+    );
+    assert.ok(
+      syncedVisualTops.length >= 2 &&
+        syncedVisualTops.at(-1) < 680 + remaining + 1,
+      "every driven frame must report the live visual top to the content"
+    );
+
+    environment.advanceTime(300);
+    environment.flushFrames();
+    assert.equal(runtime.isFramedOpeningActive(), false);
+    assert.equal(
+      elements.composerEl.style.transform,
+      "",
+      "the inline transform must be cleared at the endpoint"
+    );
+    assert.equal(
+      elements.hostEl.classList.contains("is-mobile-keyboard-host-opening"),
+      false
+    );
+    runtime.release();
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertFramedCloseLandsWithComposer(module) {
+  const environment = installRuntimeEnvironment();
+  try {
+    const elements = createRuntimeElements({ ios: true });
+    let closeStarted = 0;
+    let closeFinished = 0;
+    let closed = 0;
+    let restores = 0;
+    const closeTops = [];
+    const runtime = createRuntime(module, elements, {
+      shouldFollowClose: () => true,
+      onPresentationCloseStarted: () => {
+        closeStarted += 1;
+      },
+      onPresentationCloseFrame: (visualComposerTop) => {
+        closeTops.push(visualComposerTop);
+      },
+      onPresentationCloseFinished: () => {
+        closeFinished += 1;
+      },
+      onPresentationClosed: () => {
+        closed += 1;
+      }
+    });
+    runtime.bind();
+    environment.documentTarget.activeElement = elements.composerEl;
+    runtime.beginFocus();
+    dispatchKeyboard(environment.windowTarget, "keyboardWillShow", 320);
+    environment.advanceTime(400);
+    dispatchKeyboard(environment.windowTarget, "keyboardDidShow", 320);
+    environment.flushFrames();
+    environment.flushFrames();
+
+    runtime.endFocus();
+    runtime.scheduleLayerRestoreAfterBlur(() => {
+      restores += 1;
+    });
+    dispatchKeyboard(environment.windowTarget, "keyboardWillHide");
+
+    assert.equal(closeStarted, 1, "the framed close must capture its start geometry");
+    assert.equal(
+      closed,
+      0,
+      "the framed close must not collapse the keyboard reserved space at hide start"
+    );
+    assert.equal(restores, 0, "the layer must stay live while the composer falls");
+    assert.equal(
+      elements.hostEl.style.getPropertyValue("--sidet-mobile-keyboard-host-duration"),
+      "210ms",
+      "the framed close must cap its duration instead of trailing the full keyboard hide"
+    );
+    assert.equal(
+      elements.hostEl.classList.contains("is-mobile-keyboard-host-framed"),
+      true
+    );
+    const startTransform = Number.parseFloat(
+      /translate3d\(0, (-?[\d.]+)px, 0\)/.exec(elements.composerEl.style.transform)?.[1]
+    );
+    assert.ok(
+      Number.isFinite(startTransform) && startTransform < 0,
+      `the composer must start above its resting position, got ${startTransform}`
+    );
+    assert.equal(closeTops[0], 424, "the first close frame must report the presented top");
+
+    environment.advanceTime(150);
+    environment.flushFrames();
+    const midTransform = Number.parseFloat(
+      /translate3d\(0, (-?[\d.]+)px, 0\)/.exec(elements.composerEl.style.transform)?.[1]
+    );
+    assert.ok(
+      midTransform > startTransform && midTransform < 0,
+      "the composer must fall monotonically toward the resting position"
+    );
+    assert.ok(closeTops.length >= 2, "each close frame must report the live visual top");
+
+    environment.advanceTime(400);
+    environment.flushFrames();
+    assert.equal(closeFinished, 1, "the framed close must finish once");
+    assert.equal(
+      closed,
+      0,
+      "the framed close replaces the legacy immediate reserved-space restore"
+    );
+    assert.equal(elements.composerEl.style.transform, "");
+    assert.equal(
+      elements.hostEl.classList.contains("is-mobile-keyboard-host-framed"),
+      false
+    );
+    assert.equal(
+      restores,
+      1,
+      "the layer must hand off only after the composer lands at its resting position"
+    );
+
+    dispatchKeyboard(environment.windowTarget, "keyboardDidHide");
+    environment.flushTimers();
+    assert.equal(runtime.isManagingKeyboardViewport(), false);
+    runtime.release();
+  } finally {
+    environment.restore();
+  }
+}
+
 async function main() {
   try {
     const module = await loadKeyboardFollowModule();
@@ -1685,6 +2255,18 @@ async function main() {
     assertMissingStableHostFailsClosed(module);
     assertEnvironmentResetCannotStrandLayer(module);
     assertWorkspaceOwnershipLossDoesNotWaitForKeyboardHide(module);
+    assertPresentationSettledFiresOnDidShow(module);
+    assertIosDockSettleDefersPresentationSettled(module);
+    assertIosPanHandoffEmitsPresentationSettled(module);
+    assertPresentationClosedFiresOnHide(module);
+    assertOpeningAnimationEndRecomputesReservedSpace(module);
+    assertContentKeyboardPaddingIsNeutralized(module);
+    assertPresentationStartedFiresOnce(module);
+    assertLearnedKeyboardSurfaceDurationMatchesNativeAnimation(module);
+    assertIosFirstPresentationUsesKeyboardLikeDuration(module);
+    assertLearnedSurfaceDurationIsClamped(module);
+    assertFramedOpeningDrivesComposerInOneFrame(module);
+    assertFramedCloseLandsWithComposer(module);
     assertIosPhaseProbeSeesViewportUpdateAfterEvent(module, diagnostics);
     assertIosPhaseProbeExposesHostActivationFailure(module, diagnostics);
     assertIosPhaseProbeIsBounded(diagnostics);

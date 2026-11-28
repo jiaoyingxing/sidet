@@ -28,33 +28,41 @@ export const DEFAULT_MODEL_PROVIDER_ID: ModelProviderId = "siliconflow";
 export const DEFAULT_MODEL_PRESET_ID = "siliconflow-deepseek-v3";
 export const CUSTOM_MODEL_PRESET_ID = "custom";
 export const DEFAULT_MODEL_CONFIG_ID = "model-default";
-export const DEFAULT_WEB_SEARCH_MODE: WebSearchMode = "off";
+/**
+ * 全局自动联网开关（设置页「模型服务」）：`auto` = 普通对话的工具表里带联网工具，
+ * 由模型自己判断；`off` = 不带。手动「联网搜索」是另一条显式模式，不受此值影响。
+ */
+export const DEFAULT_WEB_SEARCH_MODE: WebSearchMode = "auto";
 
+/**
+ * 服务商预设：新增模型时只带出服务商名称与接口地址，模型 ID 一律留空。
+ * `defaultModel` 现在用于输入框示例与旧数据缺模型时的兜底，不再作为预填值。
+ */
 export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
   {
     id: "siliconflow",
     label: "硅基流动",
     baseUrl: "https://api.siliconflow.cn/v1",
-    defaultModel: "deepseek-ai/DeepSeek-V3"
+    defaultModel: "deepseek-ai/DeepSeek-V4.1-Flash"
   },
   {
     id: "mimo",
     label: "小米 MiMo",
     baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
-    defaultModel: "mimo-v2.5-pro",
+    defaultModel: "mimo-v2.6-pro",
     supportsReasoning: true
   },
   {
     id: "openai",
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o"
+    defaultModel: "gpt-6-luna"
   },
   {
     id: "deepseek",
     label: "DeepSeek",
     baseUrl: "https://api.deepseek.com/v1",
-    defaultModel: "deepseek-chat"
+    defaultModel: "deepseek-flash"
   },
   {
     id: "openrouter",
@@ -65,8 +73,9 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
   {
     id: "custom",
     label: "自定义 OpenAI 兼容",
+    // 仅作旧数据缺地址时的兜底；新增表单不会预填自定义服务商。
     baseUrl: "https://api.siliconflow.cn/v1",
-    defaultModel: "deepseek-ai/DeepSeek-V3"
+    defaultModel: "deepseek-v4.1-flash"
   }
 ];
 
@@ -101,7 +110,6 @@ export const MODEL_PRESETS: ModelPreset[] = [
     providerId: "mimo",
     model: "mimo-v2.5",
     baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
-    supportsImageInput: true,
     contextWindowTokens: 64000
   },
   {

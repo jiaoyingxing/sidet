@@ -52,6 +52,7 @@ function createRenderingHarness(ChatViewAssistantRendering) {
     getMessagesListEl: () => null,
     renderConversation: () => undefined,
     setPlainMessageContent: () => undefined,
+    renderMarkdown: () => undefined,
     renderInlineToolAction: () => undefined,
     renderWikiMaintenancePlanAction: () => undefined,
     renderAnswerSources: () => undefined,
@@ -271,6 +272,81 @@ function assertCustomStepLabelStillRenders(module) {
   assert.deepEqual(renderedLabels, ["换个搜索词再试一次"], "custom step labels should still render");
 }
 
+function assertProcessStreamOrder(module) {
+  const message = {
+    id: "assistant-stream",
+    role: "assistant",
+    text: "T0T1T2",
+    reasoningText: "R1R2R3",
+    createdAt: Date.now(),
+    status: "done",
+    processStreamVersion: 1,
+    metaPanels: [
+      {
+        kind: "step-a",
+        label: "搜索",
+        text: "A",
+        reasoningBefore: 2,
+        textBefore: 2
+      },
+      {
+        kind: "step-b",
+        label: "读取",
+        text: "B",
+        reasoningBefore: 4,
+        textBefore: 4
+      }
+    ]
+  };
+
+  assert.equal(module.supportsProcessStream(message), true, "new messages should use the process stream");
+  const layout = module.buildProcessStreamLayout(message);
+  assert.deepEqual(
+    layout.events.map((event) => `${event.type}:${event.key}`),
+    [
+      "reasoning:reasoning-0",
+      "text:text-0",
+      "panel:panel:step-a",
+      "reasoning:reasoning-1",
+      "text:text-1",
+      "panel:panel:step-b",
+      "reasoning:reasoning-2"
+    ],
+    "reasoning, actions and text segments should stay in generation order"
+  );
+  assert.equal(layout.events[0].text, "R1");
+  assert.equal(layout.events[1].text, "T0");
+  assert.equal(layout.events[3].text, "R2");
+  assert.equal(layout.events[4].text, "T1");
+  assert.equal(layout.events[6].text, "R3");
+  assert.equal(layout.trailingTextOffset, 4, "final answer starts after the last action");
+  assert.equal(module.getAssistantDisplayText(message), "T2");
+
+  const legacy = {
+    ...message,
+    processStreamVersion: undefined
+  };
+  assert.equal(module.supportsProcessStream(legacy), false, "old messages should keep the grouped layout");
+  assert.equal(module.buildProcessStreamLayout(legacy).events.length, 0);
+  assert.equal(module.getAssistantDisplayText(legacy), "T0T1T2");
+
+  const missingBoundary = {
+    ...message,
+    metaPanels: [
+      {
+        kind: "step-a",
+        label: "搜索",
+        text: "A"
+      }
+    ]
+  };
+  assert.equal(
+    module.supportsProcessStream(missingBoundary),
+    false,
+    "a panel without boundaries should fall back instead of guessing"
+  );
+}
+
 async function main() {
   try {
     const module = await loadBundledModule("src/workspace/chat-view-assistant-rendering.ts");
@@ -278,6 +354,9 @@ async function main() {
     assertLegacyWebProcessPanelMapsToWebSearch(module);
     assertReasoningFallbackLabelIsHidden(module);
     assertCustomStepLabelStillRenders(module);
+
+    const processEventsModule = await loadBundledModule("src/workspace/assistant-process-events.ts");
+    assertProcessStreamOrder(processEventsModule);
     console.log("chat meta panels logic test passed");
   } finally {
     for (const tempDir of tempDirs) {

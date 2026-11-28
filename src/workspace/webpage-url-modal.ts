@@ -1,9 +1,16 @@
-import { App, Modal } from "obsidian";
+import { App, ButtonComponent, Modal } from "obsidian";
+import {
+  createSidetModalError,
+  createSidetModalFooter,
+  type SidetModalErrorHandle
+} from "../shared/modal/sidet-modal-shell";
 
 export class WebpageUrlModal extends Modal {
   private inputEl: HTMLInputElement | null = null;
   private submitButtonEl: HTMLButtonElement | null = null;
+  private errorHandle: SidetModalErrorHandle | null = null;
   private didSubmit = false;
+  private submitting = false;
 
   constructor(
     app: App,
@@ -14,14 +21,9 @@ export class WebpageUrlModal extends Modal {
   }
 
   override onOpen(): void {
-    this.containerEl.addClass("sidet-rename-modal-container");
     this.modalEl.addClass("sidet-rename-modal");
+    this.titleEl.setText("引用网页");
     this.contentEl.empty();
-
-    this.contentEl.createEl("h2", {
-      cls: "sidet-rename-modal-title",
-      text: "引用网页"
-    });
 
     const bodyEl = this.contentEl.createDiv({ cls: "sidet-rename-modal-body" });
     bodyEl.createDiv({
@@ -36,26 +38,26 @@ export class WebpageUrlModal extends Modal {
     this.inputEl.placeholder = "https://example.com/article";
     this.inputEl.setAttr("aria-label", "网页链接");
 
-    const actionsEl = this.contentEl.createDiv({ cls: "sidet-rename-modal-actions" });
-    const cancelButtonEl = actionsEl.createEl("button", {
-      cls: "mod-muted",
-      text: "取消"
-    });
-    cancelButtonEl.type = "button";
-    cancelButtonEl.addEventListener("click", () => {
-      this.close();
-    });
+    const errorHandle = createSidetModalError(this.contentEl);
+    this.errorHandle = errorHandle;
+    const actionsEl = createSidetModalFooter(this.contentEl);
+    new ButtonComponent(actionsEl)
+      .setButtonText("取消")
+      .setClass("mod-cancel")
+      .onClick(() => {
+        this.close();
+      });
 
-    this.submitButtonEl = actionsEl.createEl("button", {
-      cls: "mod-cta",
-      text: "引用网页"
-    });
-    this.submitButtonEl.type = "button";
-    this.submitButtonEl.addEventListener("click", () => {
-      void this.submit();
-    });
+    this.submitButtonEl = new ButtonComponent(actionsEl)
+      .setButtonText("引用网页")
+      .setCta()
+      .onClick(() => {
+        void this.submit();
+      })
+      .buttonEl;
 
     this.inputEl.addEventListener("input", () => {
+      this.errorHandle?.clear();
       this.syncSubmitButton();
     });
     this.inputEl.addEventListener("keydown", (event) => {
@@ -81,6 +83,8 @@ export class WebpageUrlModal extends Modal {
     this.contentEl.empty();
     this.inputEl = null;
     this.submitButtonEl = null;
+    this.errorHandle = null;
+    this.submitting = false;
     if (!this.didSubmit) {
       this.onCancel?.();
     }
@@ -90,18 +94,33 @@ export class WebpageUrlModal extends Modal {
     if (!this.submitButtonEl) {
       return;
     }
-    this.submitButtonEl.disabled = (this.inputEl?.value.trim().length ?? 0) === 0;
+    this.submitButtonEl.disabled = this.submitting
+      || (this.inputEl?.value.trim().length ?? 0) === 0;
   }
 
   private async submit(): Promise<void> {
+    if (this.submitting) {
+      return;
+    }
     const url = this.inputEl?.value.trim() ?? "";
     if (!url) {
       this.inputEl?.focus();
       return;
     }
 
-    this.didSubmit = true;
-    await this.onSubmitUrl(url);
-    this.close();
+    this.errorHandle?.clear();
+    this.submitting = true;
+    this.syncSubmitButton();
+    try {
+      await this.onSubmitUrl(url);
+      this.didSubmit = true;
+      this.close();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message.trim() : "";
+      this.errorHandle?.show(detail ? `引用失败：${detail}` : "引用失败，请稍后重试。");
+    } finally {
+      this.submitting = false;
+      this.syncSubmitButton();
+    }
   }
 }

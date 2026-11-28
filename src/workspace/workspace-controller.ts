@@ -23,6 +23,12 @@ import {
 import { WebpageContextService } from "../context/webpage-context";
 import { AgentActionPreviewService } from "../agent/actions/agent-action-preview";
 import { runAgentToolLoop } from "../agent/tools/agent-tool-loop";
+import { resolveAgentToolDefinitions } from "../agent/tools/tool-registry";
+import type {
+  AgentToolExecutionResult,
+  AgentToolInvocation
+} from "../agent/tools/tool-types";
+import { buildWebResearchToolContent } from "../agent/tools/web-research-tool";
 import { VaultToolService } from "../agent/tools/vault-tool-service";
 import {
   buildSidetFileToolContext,
@@ -48,6 +54,7 @@ import {
   stripSidetProtocolBlocks
 } from "../agent/web-search/sidet-protocol";
 import {
+  createResearchBudget,
   runWebResearchRound,
   type ResearchBudget,
   type ResearchPage,
@@ -55,6 +62,7 @@ import {
   type ResearchRoundResult
 } from "../agent/web-search/research-agent";
 import {
+  createResearchLoopState,
   runWebResearchLoop,
   type ResearchLoopState
 } from "../agent/web-search/research-loop";
@@ -88,6 +96,7 @@ import { syncLeafHeaderTitle } from "./leaf-header";
 import { WorkspaceLeafNavigation } from "./workspace-leaf-navigation";
 import { WorkspaceConversationActions } from "./workspace-conversation-actions";
 import { WorkspaceNativeNewTabTakeover } from "./workspace-native-new-tab-takeover";
+import { WorkspaceNewTabEmptyStateEnhancer } from "./new-tab-empty-state-enhancer";
 import {
   applyKnowledgeBaseSelection,
   applyWebSearchEnabled,
@@ -175,12 +184,29 @@ function createWebStepPanel(kind: string, label: string) {
   };
 }
 
+interface AutoWebSearchContext {
+  state: ResearchLoopState;
+  rounds: number;
+}
+
+/**
+ * 一条消息内的自动联网上下文：来源编号、已读 URL 与查询跨多次工具调用累积，
+ * 每次调用仍按一轮检索的现役预算执行；总调用次数由工具循环的轮次与结果预算约束。
+ */
+function createAutoWebSearchContext(): AutoWebSearchContext {
+  return {
+    state: createResearchLoopState(""),
+    rounds: 0
+  };
+}
+
 export class WorkspaceController {
   private readonly workspaceListeners = new SimpleListeners();
   private readonly chatLeafRuntime: ChatLeafRuntime;
   private readonly leafNavigation: WorkspaceLeafNavigation;
   private readonly conversationActions: WorkspaceConversationActions;
   private readonly nativeNewTabTakeover: WorkspaceNativeNewTabTakeover;
+  private readonly newTabEmptyStateEnhancer: WorkspaceNewTabEmptyStateEnhancer;
   private readonly draftIntake: ChatDraftIntake;
   private readonly vaultToolService: VaultToolService;
 
@@ -215,6 +241,7 @@ export class WorkspaceController {
       runtime: this.chatLeafRuntime
     });
     this.nativeNewTabTakeover = new WorkspaceNativeNewTabTakeover(app, this.leafNavigation);
+    this.newTabEmptyStateEnhancer = new WorkspaceNewTabEmptyStateEnhancer(app, this.leafNavigation);
     this.vaultToolService = new VaultToolService({
       app,
       queryWikiMemory: (query) => this.vaultAgent.searchWikiMemory(query)
@@ -299,6 +326,14 @@ export class WorkspaceController {
 
   isWebSearchEnabled(leaf: WorkspaceLeaf): boolean {
     return this.getChatLeafState(leaf).webSearchEnabled === true;
+  }
+
+  /**
+   * 全局自动联网开关（设置页「模型服务」）。只管普通对话要不要带联网工具；
+   * 手动「联网搜索」是叶子级显式模式，不受这里影响。
+   */
+  private isAutoWebSearchEnabled(): boolean {
+    return this.getSettings().webSearchMode === "auto";
   }
 
   private resolveSelectedKnowledgeBaseState(knowledgeBaseIndexPath: string | null | undefined): SelectedKnowledgeBaseState {
@@ -833,6 +868,7 @@ export class WorkspaceController {
           appendVisibleContent: (chunk) => runtime.appendContent(chunk)
         });
         const baseMessages = runtime.buildRequestMessages(requestContext);
+        const autoWebSearch = createAutoWebSearchContext();
         await runAgentToolLoop({
           baseMessages,
           createMessage: (role, messageText) => this.createEphemeralMessage(role, messageText),
@@ -840,7 +876,15 @@ export class WorkspaceController {
             webSearchMode: "off",
             ...callOptions
           }),
-          executeTool: (invocation) => this.vaultToolService.execute(invocation),
+          toolDefinitions: resolveAgentToolDefinitions({
+            webResearch: this.isAutoWebSearchEnabled()
+          }),
+          executeTool: (invocation) => this.executeAgentTool(
+            invocation,
+            runtime,
+            baseMessages,
+            autoWebSearch
+          ),
           onVisibleContent: (chunk) => toolStepPresenter.appendVisibleContent(chunk),
           onReasoning: (chunk) => runtime.appendReasoning(chunk),
           onToolStep: (step) => toolStepPresenter.handleStep(step),
@@ -1105,6 +1149,7 @@ export class WorkspaceController {
     this.activeContext.rememberActiveMarkdownSource();
     this.cleanupDetachedChatLeaves();
     this.nativeNewTabTakeover.scheduleRecovery();
+    this.newTabEmptyStateEnhancer.scheduleRefresh(6);
   }
 
   handleLayoutChange(): void {
@@ -1112,6 +1157,7 @@ export class WorkspaceController {
     this.cleanupDetachedChatLeaves();
     this.leafNavigation.dedupeBrowserLeaves();
     this.nativeNewTabTakeover.scheduleRecovery();
+    this.newTabEmptyStateEnhancer.scheduleRefresh(6);
     this.workspaceListeners.emit();
   }
 
@@ -1122,6 +1168,7 @@ export class WorkspaceController {
       this.chatLeafRuntime.rememberFocusedChatLeaf(activeLeaf);
     }
     this.nativeNewTabTakeover.scheduleRecovery();
+    this.newTabEmptyStateEnhancer.scheduleRefresh(3);
     this.workspaceListeners.emit();
   }
 
@@ -1136,6 +1183,7 @@ export class WorkspaceController {
   destroy(): void {
     this.chatLeafRuntime.destroy();
     this.nativeNewTabTakeover.destroy();
+    this.newTabEmptyStateEnhancer.dispose();
   }
 
   private async ensureConversationStoreReady(): Promise<void> {
@@ -1231,6 +1279,62 @@ export class WorkspaceController {
     });
   }
 
+  /**
+   * 普通对话的工具执行路由：vault 四件直接进 `VaultToolService`，
+   * `web_research` 走同一消息内的联网上下文。联网工具是否在工具表里由
+   * `resolveAgentToolDefinitions` 决定，这里不再做第二道开关。
+   */
+  private async executeAgentTool(
+    invocation: AgentToolInvocation,
+    runtime: LocalAssistantTaskRuntime,
+    baseMessages: MessageRecord[],
+    autoWebSearch: AutoWebSearchContext
+  ): Promise<AgentToolExecutionResult> {
+    if (invocation.tool !== "web_research") {
+      return this.vaultToolService.execute(invocation);
+    }
+
+    const query = invocation.query?.trim() ?? "";
+    if (!query) {
+      return {
+        tool: "web_research",
+        status: "error",
+        content: "缺少 query，无法联网检索。"
+      };
+    }
+
+    autoWebSearch.rounds += 1;
+    const result = await this.runResearchRound(
+      autoWebSearch.rounds,
+      query,
+      null,
+      createResearchBudget(),
+      autoWebSearch.state,
+      runtime,
+      baseMessages
+    );
+
+    autoWebSearch.state.pages = [...autoWebSearch.state.pages, ...result.pages];
+    autoWebSearch.state.lastSearchResults = result.results;
+    autoWebSearch.state.lastQuestion = query;
+    autoWebSearch.state.queries = [...autoWebSearch.state.queries, ...result.queries];
+    this.commitWebSearchSources(runtime, autoWebSearch.state.pages, result.results);
+
+    if (result.status === "empty") {
+      return {
+        tool: "web_research",
+        status: "error",
+        content: result.evidenceText.trim() || "没有检索到可用结果。"
+      };
+    }
+
+    return {
+      tool: "web_research",
+      status: "ok",
+      content: buildWebResearchToolContent(result, autoWebSearch.state.pages)
+    };
+  }
+
   private async runResearchRound(
     round: number,
     question: string,
@@ -1311,7 +1415,7 @@ export class WorkspaceController {
         note: page.snippet?.trim() || undefined
       })));
     } else if (result.results.length > 0) {
-      runtime.setMetaPanelSources(stepPanel, result.results.slice(0, 5).map((item, index) => ({
+      runtime.setMetaPanelSources(stepPanel, result.results.slice(0, 8).map((item, index) => ({
         title: `${index + 1}. ${item.title}`,
         url: item.url,
         host: item.host,
@@ -1407,7 +1511,7 @@ export class WorkspaceController {
         readDepth: "full"
       }));
     } else {
-      sources = searchResults.slice(0, 5).map((result) => ({
+      sources = searchResults.slice(0, 8).map((result) => ({
         title: result.title,
         url: result.url,
         host: result.host,

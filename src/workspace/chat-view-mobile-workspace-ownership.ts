@@ -5,11 +5,27 @@ interface MobileWorkspaceAnchor {
   viewportWidth: number;
 }
 
+/** 所有权丢失时的只读几何快照：排障要看到是哪个横向量越过了容差。 */
+export interface MobileWorkspaceOwnershipLossDetail {
+  anchorLeft: number;
+  anchorRight: number;
+  anchorWidth: number;
+  anchorViewportWidth: number;
+  rectLeft: number;
+  rectRight: number;
+  rectWidth: number;
+  viewportWidth: number;
+  intersectionRatio: number | null;
+}
+
 interface ChatViewMobileWorkspaceOwnershipGuardOptions {
   getRootEl: () => HTMLElement | null;
   getViewportWidth: () => number;
   isLayerActive: () => boolean;
-  onOwnershipLoss: (trigger: string) => void;
+  onOwnershipLoss: (
+    trigger: string,
+    detail: MobileWorkspaceOwnershipLossDetail
+  ) => void;
 }
 
 const WORKSPACE_DRIFT_TOLERANCE_PX = 1;
@@ -90,7 +106,7 @@ export class ChatViewMobileWorkspaceOwnershipGuard {
         if (!entry) {
           return;
         }
-        this.evaluateRect(entry.boundingClientRect, "intersection");
+        this.evaluateRect(entry.boundingClientRect, "intersection", entry.intersectionRatio);
       },
       {
         root: null,
@@ -107,10 +123,14 @@ export class ChatViewMobileWorkspaceOwnershipGuard {
       this.stop();
       return;
     }
-    this.evaluateRect(rootEl.getBoundingClientRect(), trigger);
+    this.evaluateRect(rootEl.getBoundingClientRect(), trigger, null);
   }
 
-  private evaluateRect(rect: DOMRectReadOnly, trigger: string): void {
+  private evaluateRect(
+    rect: DOMRectReadOnly,
+    trigger: string,
+    intersectionRatio: number | null
+  ): void {
     const anchor = this.anchor;
     const rootEl = this.options.getRootEl();
     if (!anchor || !this.options.isLayerActive() || !rootEl?.isConnected) {
@@ -128,16 +148,28 @@ export class ChatViewMobileWorkspaceOwnershipGuard {
       return;
     }
 
+    // 侧栏 drawer 无论左右都是把 workspace 整体平移，聊天根左缘一定离锚
+    // （2026-07 真机：12→340 / 12→-316）。键盘期内容区出现纵向滚动条只会让
+    // 右缘/宽度缩几像素、左缘不动（2026-11-28 安卓 1.15.0：336↔331）——
+    // 那不是所有权丢失，按它 blur 会把刚聚焦的输入框打掉。只认左缘平移。
     if (
-      Math.abs(rect.left - anchor.left) <= WORKSPACE_DRIFT_TOLERANCE_PX &&
-      Math.abs(rect.right - anchor.right) <= WORKSPACE_DRIFT_TOLERANCE_PX &&
-      Math.abs(rect.width - anchor.width) <= WORKSPACE_DRIFT_TOLERANCE_PX
+      Math.abs(rect.left - anchor.left) <= WORKSPACE_DRIFT_TOLERANCE_PX
     ) {
       return;
     }
 
     this.stop();
-    this.options.onOwnershipLoss(trigger);
+    this.options.onOwnershipLoss(trigger, {
+      anchorLeft: anchor.left,
+      anchorRight: anchor.right,
+      anchorWidth: anchor.width,
+      anchorViewportWidth: anchor.viewportWidth,
+      rectLeft: rect.left,
+      rectRight: rect.right,
+      rectWidth: rect.width,
+      viewportWidth,
+      intersectionRatio
+    });
   }
 
   private scheduleFallbackCheck(): void {

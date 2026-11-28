@@ -220,6 +220,36 @@ function assertHomeRendersReusableCapabilitiesAndLabeledLaunchers(module) {
     "selected home capabilities need a persistent selected presentation class"
   );
   assert.equal(result.capabilityEls.get("web-search").attributes.get("aria-pressed"), "true");
+  assert.equal(
+    result.capabilityEls.get("web-search").attributes.get("aria-label"),
+    "取消联网搜索",
+    "a selected home capability must announce the cancel action"
+  );
+  assert.equal(
+    result.capabilityEls.get("knowledge-base").attributes.get("aria-label"),
+    "选择知识库",
+    "an unselected home capability must announce the select action"
+  );
+  module.setChatHomeCapabilitySelected(
+    result.capabilityEls.get("knowledge-base"),
+    true,
+    "知识库"
+  );
+  assert.equal(
+    result.capabilityEls.get("knowledge-base").attributes.get("aria-label"),
+    "取消知识库",
+    "the home capability label must follow the live selected state"
+  );
+  module.setChatHomeCapabilitySelected(
+    result.capabilityEls.get("knowledge-base"),
+    false,
+    "知识库"
+  );
+  assert.equal(
+    result.capabilityEls.get("knowledge-base").attributes.get("aria-label"),
+    "选择知识库",
+    "the home capability label must return to the select action when cleared"
+  );
   assert.ok(
     result.capabilityEls.get("knowledge-base").classList.contains("sidet-composer-attachment-chip"),
     "home capabilities must reuse the composer chip surface"
@@ -282,6 +312,18 @@ function assertSingleComposerHomeStateProtection() {
     "utf8"
   );
   const css = readFileSync(path.join(rootDir, "styles.css"), "utf8");
+  const contextIntakeSource = readFileSync(
+    path.join(rootDir, "src", "workspace", "chat-view-context-intake.ts"),
+    "utf8"
+  );
+  const chatHomeSource = readFileSync(
+    path.join(rootDir, "src", "workspace", "chat-home.ts"),
+    "utf8"
+  );
+  const attachmentRenderingSource = readFileSync(
+    path.join(rootDir, "src", "workspace", "chat-attachment-rendering.ts"),
+    "utf8"
+  );
 
   assert.equal(
     [...chatViewSource.matchAll(/createEl\("textarea"/g)].length,
@@ -312,6 +354,65 @@ function assertSingleComposerHomeStateProtection() {
     css,
     /\.sidet-home-capability-chip\.is-home-capability-selected[\s\S]*?background:/,
     "selected home capabilities must remain visible with a stable selected surface"
+  );
+  const buildHomeCapabilitiesSource = chatViewSource.slice(
+    chatViewSource.indexOf("private buildHomeCapabilities()"),
+    chatViewSource.indexOf("private isHomeCapabilitySelected(")
+  );
+  assert.match(
+    buildHomeCapabilitiesSource,
+    /if \(this\.isHomeCapabilitySelected\("knowledge-base"\)\) \{\s*this\.controller\.setSelectedKnowledgeBase\(this\.leaf, null\);/,
+    "clicking a selected knowledge-base chip must clear the mode"
+  );
+  assert.match(
+    buildHomeCapabilitiesSource,
+    /if \(this\.isHomeCapabilitySelected\("web-search"\)\) \{\s*this\.controller\.setWebSearchEnabled\(this\.leaf, false\);/,
+    "clicking a selected web-search chip must disable the mode"
+  );
+  assert.match(
+    buildHomeCapabilitiesSource,
+    /if \(this\.isHomeCapabilitySelected\("wiki-card"\)\) \{\s*this\.setHomeWikiCardSelected\(false\);/,
+    "clicking a selected wiki-card chip must clear the home-only selection"
+  );
+  assert.match(
+    buildHomeCapabilitiesSource,
+    /if \(this\.isHomeCapabilitySelected\("web-clipping"\)\) \{\s*this\.contextIntake\.clearDraftWebpageAttachments\(\);/,
+    "clicking a selected web-clipping chip must remove the attached webpages"
+  );
+  assert.match(
+    contextIntakeSource,
+    /clearDraftWebpageAttachments\(\): void \{[\s\S]{0,260}?attachment\.type !== "webpage"[\s\S]{0,260}?this\.draftAttachments = nextAttachments;/,
+    "clearing web-clipping must keep non-webpage attachments"
+  );
+  assert.match(
+    chatHomeSource,
+    /preserveFocus: true/,
+    "home capability chips must not steal focus from a focused composer"
+  );
+  assert.match(
+    attachmentRenderingSource,
+    /if \(options\.preserveFocus\) \{[\s\S]{0,360}?chipEl\.addEventListener\("pointerdown", preserveFocusForPress\);[\s\S]{0,140}?chipEl\.addEventListener\("mousedown", preserveFocusForPress\);/,
+    "preserveFocus must cancel the pointer press before the chip can take focus"
+  );
+  assert.match(
+    buildHomeCapabilitiesSource,
+    /private finishHomeCapabilityToggle[\s\S]{0,360}?activeElement === anchorEl[\s\S]{0,140}?anchorEl\.blur\(\);[\s\S]{0,140}?this\.focusActiveComposerTextarea\(\);/,
+    "a capability toggle must clear any focus left on the chip before returning focus to the composer"
+  );
+  assert.match(
+    css,
+    /\.sidet-composer-attachment-chip\.is-clickable:focus-visible \{/,
+    "keyboard focus must still be visible on composer chips"
+  );
+  assert.match(
+    css,
+    /@media \(hover: hover\) \{[\s\S]{0,160}?\.sidet-composer-attachment-chip\.is-clickable:hover \{/,
+    "composer chip hover must be limited to hover-capable pointers"
+  );
+  assert.match(
+    css,
+    /@media \(hover: hover\) \{[\s\S]{0,120}?\.sidet-home-capability-chip:hover \{/,
+    "home capability chip hover must be limited to hover-capable pointers"
   );
   assert.doesNotMatch(
     css,
@@ -506,17 +607,22 @@ function assertSingleComposerHomeStateProtection() {
   );
   assert.match(
     workspaceOwnershipSource,
-    /new IntersectionObserver\([\s\S]*this\.evaluateRect\(\s*entry\.boundingClientRect,\s*"intersection"\s*\)/,
+    /new IntersectionObserver\([\s\S]*this\.evaluateRect\(\s*entry\.boundingClientRect,\s*"intersection"(?:,\s*entry\.intersectionRatio)?\s*\)/,
     "the active body layer must observe its own chat root without private drawer DOM"
   );
   assert.match(
     workspaceOwnershipSource,
-    /Math\.abs\(rect\.left - anchor\.left\)[\s\S]*Math\.abs\(rect\.right - anchor\.right\)[\s\S]*Math\.abs\(rect\.width - anchor\.width\)/,
-    "left and right drawer motion must share one root-geometry ownership test"
+    /Math\.abs\(rect\.left - anchor\.left\)[\s\S]*?WORKSPACE_DRIFT_TOLERANCE_PX/,
+    "drawer motion must be recognized by the chat root's left-edge translation"
+  );
+  assert.doesNotMatch(
+    workspaceOwnershipSource,
+    /Math\.abs\(rect\.(?:right|width) - anchor\.(?:right|width)\)\s*<=/,
+    "scrollbar width flicker must not be treated as drawer ownership loss"
   );
   assert.match(
     workspaceOwnershipSource,
-    /this\.stop\(\);\s*this\.options\.onOwnershipLoss\(trigger\);/,
+    /this\.stop\(\);\s*this\.options\.onOwnershipLoss\(trigger(?:,\s*\{[\s\S]*?\})?\);/,
     "ownership loss must stop observation before starting the terminal handoff"
   );
   const ownershipInterruptionSource = mobileComposerSource.slice(
@@ -592,6 +698,15 @@ function assertSingleComposerHomeStateProtection() {
           'this.rootEl?.removeClass("is-home-input-state")'
         ),
     "the capability row must return before the composer and home presentation are revealed"
+  );
+  const followKeyboardCloseSource = mobileComposerSource.slice(
+    mobileComposerSource.indexOf("private shouldFollowKeyboardClose"),
+    mobileComposerSource.indexOf("private beginKeyboardCloseFollow")
+  );
+  assert.match(
+    followKeyboardCloseSource,
+    /if\s*\(this\.options\.isHomeState\(\)\)\s*\{\s*return false;\s*\}/,
+    "home must keep the one-shot layer handoff instead of the conversation close follow"
   );
   assert.match(
     css,
@@ -676,6 +791,16 @@ function assertMobileHomeRestGeometryProtection(module) {
     }),
     true,
     "drawer workspace drift must keep the original rest slot"
+  );
+  assert.equal(
+    module.isMobileHomeRestGeometryDisplaced(anchor, {
+      ...anchor,
+      rootRight: 385,
+      rootWidth: 385,
+      composerWidth: 365
+    }),
+    false,
+    "vertical scrollbar width flicker must not keep the home anchor forever"
   );
   assert.equal(
     module.isMobileHomeRestGeometryDisplaced(anchor, {

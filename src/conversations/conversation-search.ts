@@ -1,6 +1,5 @@
-import { stripSidetToolActionBlock } from "../agent/actions/agent-tool-protocol";
-import { stripSidetProtocolBlocks } from "../agent/web-search/sidet-protocol";
 import type { ConversationRecord, MessageRecord } from "../types";
+import { getAssistantDisplayText } from "./assistant-visible-text";
 
 export interface ConversationMessageSearchRange {
   start: number;
@@ -125,7 +124,7 @@ function getSearchableMessageText(message: MessageRecord): string {
     return "";
   }
   const rawText = message.role === "assistant"
-    ? stripMarkdownNoise(stripSidetToolActionBlock(stripSidetProtocolBlocks(message.text)))
+    ? stripMarkdownNoise(getAssistantDisplayText(message))
     : message.text;
   return normalizeSearchWhitespace(rawText);
 }

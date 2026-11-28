@@ -1,6 +1,4 @@
 import { App, Component, MarkdownRenderer, setIcon } from "obsidian";
-import { stripSidetToolActionBlock } from "../agent/actions/agent-tool-protocol";
-import { stripSidetProtocolBlocks } from "../agent/web-search/sidet-protocol";
 import { parseWebSearchImportLink } from "../context/web-search-service";
 import type { ConversationRecord, MessageMetaPanel, MessageRecord, MessageSource } from "../types";
 import { recordChatRenderTrace } from "./chat-view-render-trace";
@@ -17,6 +15,14 @@ import {
 } from "./assistant-message-dom";
 import { decorateCitationMarkers } from "./chat-view-citation-dom";
 import { hasPartialErrorContent } from "./chat-view-answer-presentation";
+import { installSmoothDetailsToggle } from "./details-smooth-toggle";
+import {
+  buildProcessStreamLayout,
+  getAssistantDisplayText as getProcessAssistantDisplayText,
+  getAssistantTrailingTextOffset,
+  stripAssistantProcessText,
+  supportsProcessStream
+} from "./assistant-process-events";
 import {
   buildMetaPanelSignature,
   buildMetaPanelTextSignature,
@@ -38,6 +44,8 @@ export interface PendingStreamingMarkdownRender {
   markdown: string;
   conversationId: string;
   messageId: string;
+  /** 发起渲染时的正文起点；动作面板插入会改它。 */
+  textOffset?: number;
 }
 
 interface RenderAssistantMarkdownOptions {
@@ -48,6 +56,10 @@ interface RenderAssistantMarkdownOptions {
   staged?: boolean;
   managedScrollRestore?: boolean;
   streaming?: boolean;
+  /** 流式渲染发起时的正文起点；完成时起点变了就丢弃这次结果。 */
+  expectedTextOffset?: number;
+  /** 发起渲染时的回答版本；切换版本后旧版本的异步渲染必须丢弃。 */
+  expectedAnswerVariantIndex?: number;
   sources?: MessageSource[];
 }
 
@@ -61,6 +73,9 @@ interface ChatViewAssistantRenderingOptions {
   getScrollBottomTarget: (scrollHost?: HTMLElement) => number;
   getScrollPinnedToBottom: () => boolean;
   setScrollPinnedToBottom: (value: boolean) => void;
+  refreshPinnedToBottom?: () => void;
+  /** 用户开合过程面板 / 来源等折叠块；参数为开启方向。 */
+  onUserContentToggle?: (open: boolean) => void;
   getLastConversationId: () => string | null;
   getLastRenderedMessageCount: () => number;
   setLastRenderedMessageCount: (count: number) => void;
@@ -74,6 +89,7 @@ interface ChatViewAssistantRenderingOptions {
   getMessagesListEl: () => HTMLDivElement | null;
   renderConversation: () => void;
   setPlainMessageContent: (contentEl: HTMLDivElement, text: string) => void;
+  renderMarkdown: (parentEl: HTMLElement, markdown: string) => void;
   renderInlineToolAction: (parentEl: HTMLElement, conversation: ConversationRecord, message: MessageRecord) => void;
   renderWikiMaintenancePlanAction: (
     parentEl: HTMLElement,
@@ -115,6 +131,10 @@ interface RenderedMetaLayout {
   panels: RenderedMetaPanelBlock[];
 }
 
+type RenderedProcessBlock =
+  | { type: "panel"; key: string; panel: RenderedMetaPanelBlock }
+  | { type: "text"; key: string; text: string };
+
 interface StepGroupInfo {
   group: string;
   label: string;
@@ -155,11 +175,15 @@ export class ChatViewAssistantRendering {
   private streamingMarkdownRenderComponent: Component | null = null;
   private bottomFollowFrame: number | null = null;
   private bottomFollowProgrammaticScrollTop: number | null = null;
+  private bottomFollowIntentUntil = 0;
   private bottomAnchorRequestVersion = 0;
   private lastStreamingMarkdownLength = 0;
+  private lastContentHeight: number | null = null;
+  private suppressContentResizeUntil = 0;
   private strippedTextCache: {
     messageId: string;
     textLength: number;
+    textOffset: number;
     variantIndex: number;
     status: MessageRecord["status"];
     text: string;
@@ -179,10 +203,55 @@ export class ChatViewAssistantRendering {
     this.cancelBottomFollow();
     this.resetStreamingMarkdownRenderer();
     this.bottomFollowProgrammaticScrollTop = null;
+    this.bottomFollowIntentUntil = 0;
     this.strippedTextCache = null;
   }
 
+  /**
+   * 消息内容自身高度变化（展开 / 收起、切换回答版本、图片与异步 Markdown 补齐）
+   * 时，贴底阅读继续保持贴底；非贴底阅读保持原位。
+   *
+   * ResizeObserver 在绘制前回调，这里同步把滚动位置补到新底部：底栏与操作排
+   * 原地不动，新增空间从上方推出，缩短时底部同样不动。若改成下一帧平滑追底，
+   * 底部会先被顶出去一帧再追回来，形成可见闪烁。手动收起期间仍由调用方抑制。
+   */
+  handleContentResize(): void {
+    const scrollHost = this.options.getScrollHost();
+    const height = scrollHost.scrollHeight;
+    const previousHeight = this.lastContentHeight;
+    this.lastContentHeight = height;
+    if (nowMs() < this.suppressContentResizeUntil) {
+      return;
+    }
+    if (previousHeight === null || height === previousHeight) {
+      return;
+    }
+    if (!this.options.getScrollPinnedToBottom()) {
+      return;
+    }
+    this.cancelBottomFollow();
+    this.options.setScrollHostTop(this.options.getScrollBottomTarget(scrollHost));
+    this.options.setScrollPinnedToBottom(true);
+    this.options.syncScrollAffordances();
+  }
+
+  /** 建立高度基线；首次渲染 / 重新观察列表时调用，避免把初始挂载当成变高。 */
+  resetContentHeightBaseline(): void {
+    this.lastContentHeight = this.options.getScrollHost().scrollHeight;
+  }
+
+  /** 卡片手动收展期间临时压住高度跟随，避免动画与贴底滚动互相抢。 */
+  suppressContentResizeFollow(durationMs = 240): void {
+    this.suppressContentResizeUntil = nowMs() + Math.max(0, durationMs);
+  }
+
   handleScroll(scrollTop: number): boolean {
+    // 用户动作触发的展开 / 版本切换：内容变化期间浏览器会因夹紧、重排产生
+    // 滚动事件，它们不是用户滚动。真实手势（滚轮 / 触摸）会提前解除锁定。
+    if (nowMs() < this.bottomFollowIntentUntil) {
+      this.options.setScrollPinnedToBottom(true);
+      return true;
+    }
     if (
       this.bottomFollowProgrammaticScrollTop !== null &&
       Math.abs(scrollTop - this.bottomFollowProgrammaticScrollTop) <= 1
@@ -192,6 +261,19 @@ export class ChatViewAssistantRendering {
     }
     this.bottomFollowProgrammaticScrollTop = null;
     return false;
+  }
+
+  /**
+   * 在用户动作开始前锁定「继续贴底」的意图：期间布局引起的滚动事件不清 pin，
+   * 内容增长仍走现有贴底跟随。用户真实手势由视图层调用 release 解除。
+   */
+  holdBottomFollowIntent(durationMs = 900): void {
+    this.bottomFollowIntentUntil = nowMs() + Math.max(0, durationMs);
+    this.options.setScrollPinnedToBottom(true);
+  }
+
+  releaseBottomFollowIntent(): void {
+    this.bottomFollowIntentUntil = 0;
   }
 
   updatePinnedToBottom(bottomPinThreshold: number): boolean {
@@ -378,6 +460,20 @@ export class ChatViewAssistantRendering {
     this.bottomFollowFrame = null;
   }
 
+  /**
+   * 键盘表面动画期间，底部留白每帧都由 composer 的实时位置重算。
+   * 这里在同一帧把滚动补到新底部，让内容与输入框成为同一条运动；
+   * 若改成下一帧平滑追底，内容会滞后一截再慢慢爬回来（真机实测峰值 120px）。
+   * 不走滚动 trace，避免每次留白变化把诊断缓冲刷满。
+   */
+  anchorBottomForKeyboardPresentation(): void {
+    const scrollHost = this.options.getScrollHost();
+    this.cancelBottomFollow();
+    this.options.setScrollHostTop(this.options.getScrollBottomTarget(scrollHost));
+    this.options.setScrollPinnedToBottom(true);
+    this.options.syncScrollAffordances();
+  }
+
   setPendingAssistantPlaceholder(contentEl: HTMLDivElement): void {
     if (contentEl.classList.contains("is-pending-reply") && contentEl.querySelector(".sidet-pending-reply-dots")) {
       return;
@@ -508,7 +604,8 @@ export class ChatViewAssistantRendering {
         contentEl,
         markdown: displayText,
         conversationId: conversation.id,
-        messageId: lastMessage.id
+        messageId: lastMessage.id,
+        textOffset: getAssistantTrailingTextOffset(lastMessage)
       });
     } else if (isStreaming && !nextText) {
       this.resetStreamingMarkdownRenderer();
@@ -523,6 +620,10 @@ export class ChatViewAssistantRendering {
         conversationId: conversation.id,
         renderGeneration: this.options.getMarkdownRenderGeneration(),
         messageId: lastMessage.id,
+        expectedAnswerVariantIndex: lastMessage.activeAnswerVariantIndex ?? 0,
+        // 完成态补丁（重新生成收尾 / 切换更长版本）不要在渲染期间先清空正文：
+        // 内容塌缩会让贴底位置被浏览器夹紧并丢失 pinned，长回答切换后停在半空。
+        staged: true,
         sources: lastMessage.sources
       });
     } else if (!nextText) {
@@ -559,20 +660,73 @@ export class ChatViewAssistantRendering {
     return true;
   }
 
+  /** 失败兜底只复核生成代 / 会话 / 回答版本，不要求目标是最新一条消息。 */
+  private isStaleAnswerVariantRender(options: RenderAssistantMarkdownOptions): boolean {
+    if (
+      options.renderGeneration !== this.options.getMarkdownRenderGeneration()
+      || this.options.getCurrentConversationId() !== options.conversationId
+      || options.expectedAnswerVariantIndex === undefined
+    ) {
+      return options.renderGeneration !== this.options.getMarkdownRenderGeneration()
+        || this.options.getCurrentConversationId() !== options.conversationId;
+    }
+    const conversation = this.options.getConversationById(options.conversationId);
+    const message = options.messageId
+      ? conversation?.messages.find((item) => item.id === options.messageId) ?? null
+      : conversation?.messages[conversation.messages.length - 1] ?? null;
+    return message !== null
+      && (message.activeAnswerVariantIndex ?? 0) !== options.expectedAnswerVariantIndex;
+  }
+
+  /** 异步渲染完成时复核：生成代、会话、消息、流式状态、正文起点与回答版本都没变。 */
+  private isStaleAssistantRender(options: RenderAssistantMarkdownOptions): boolean {
+    if (
+      options.renderGeneration !== this.options.getMarkdownRenderGeneration()
+      || this.options.getCurrentConversationId() !== options.conversationId
+    ) {
+      return true;
+    }
+    if (!options.messageId && !options.requireStreaming) {
+      return false;
+    }
+    const currentConversation = this.options.getConversationById(options.conversationId);
+    const currentLastMessage = currentConversation?.messages[currentConversation.messages.length - 1] ?? null;
+    if (
+      currentLastMessage?.id !== options.messageId
+      || (options.requireStreaming && currentLastMessage?.status !== "streaming")
+    ) {
+      return true;
+    }
+    // 动作面板插入后，正文起点会变；在途的流式渲染不能再把旧正文换回来。
+    if (
+      options.expectedTextOffset !== undefined
+      && currentLastMessage
+      && getAssistantTrailingTextOffset(currentLastMessage) !== options.expectedTextOffset
+    ) {
+      return true;
+    }
+    return options.expectedAnswerVariantIndex !== undefined
+      && currentLastMessage !== null
+      && (currentLastMessage.activeAnswerVariantIndex ?? 0) !== options.expectedAnswerVariantIndex;
+  }
+
   private getAssistantDisplayText(message: MessageRecord): string {
+    const textOffset = getAssistantTrailingTextOffset(message);
     if (
       this.strippedTextCache
       && this.strippedTextCache.messageId === message.id
       && this.strippedTextCache.textLength === message.text.length
+      && this.strippedTextCache.textOffset === textOffset
       && this.strippedTextCache.variantIndex === (message.activeAnswerVariantIndex ?? 0)
       && this.strippedTextCache.status === message.status
     ) {
       return this.strippedTextCache.text;
     }
-    const text = stripSidetToolActionBlock(stripSidetProtocolBlocks(message.text));
+    const text = getProcessAssistantDisplayText(message);
     this.strippedTextCache = {
       messageId: message.id,
       textLength: message.text.length,
+      textOffset,
       variantIndex: message.activeAnswerVariantIndex ?? 0,
       status: message.status,
       text
@@ -643,7 +797,11 @@ export class ChatViewAssistantRendering {
         streaming: Boolean(options.streaming)
       });
       console.error("Sidet：渲染 AI Markdown 失败", error);
-      this.options.setPlainMessageContent(contentEl, markdown);
+      // 失败路径也不能把已切换走的旧版本写回仍然存活的容器；非最新消息的
+      // 容器本身仍归它自己，不受「最后一条」检查影响。
+      if (!this.isStaleAnswerVariantRender(options)) {
+        this.options.setPlainMessageContent(contentEl, markdown);
+      }
       return;
     }
 
@@ -655,22 +813,8 @@ export class ChatViewAssistantRendering {
       sourceCount: options.sources?.length ?? 0
     });
 
-    if (
-      options.renderGeneration !== this.options.getMarkdownRenderGeneration() ||
-      this.options.getCurrentConversationId() !== options.conversationId
-    ) {
+    if (this.isStaleAssistantRender(options)) {
       return;
-    }
-
-    if (options.messageId || options.requireStreaming) {
-      const currentConversation = this.options.getConversationById(options.conversationId);
-      const currentLastMessage = currentConversation?.messages[currentConversation.messages.length - 1] ?? null;
-      if (
-        currentLastMessage?.id !== options.messageId ||
-        (options.requireStreaming && currentLastMessage?.status !== "streaming")
-      ) {
-        return;
-      }
     }
 
     if (options.staged) {
@@ -819,6 +963,7 @@ export class ChatViewAssistantRendering {
       requireStreaming: true,
       staged: true,
       streaming: true,
+      expectedTextOffset: render.textOffset,
       sources: currentLastMessage.sources
     });
 
@@ -854,51 +999,78 @@ export class ChatViewAssistantRendering {
     }
   }
 
+  private buildProcessStreamBlocks(message: MessageRecord): {
+    statusLines: RenderedStatusLine[];
+    blocks: RenderedProcessBlock[];
+  } | null {
+    if (!supportsProcessStream(message)) {
+      return null;
+    }
+
+    const layout = buildProcessStreamLayout(message);
+    const blocks: RenderedProcessBlock[] = [];
+    for (const event of layout.events) {
+      if (event.type === "reasoning") {
+        blocks.push({
+          type: "panel",
+          key: event.key,
+          panel: {
+            kind: event.key,
+            label: event.label,
+            text: event.text
+          }
+        });
+      } else if (event.type === "panel") {
+        blocks.push({
+          type: "panel",
+          key: event.key,
+          panel: {
+            kind: event.panel.kind,
+            label: event.panel.label.trim() || "过程",
+            text: event.panel.text,
+            sources: event.panel.sources
+          }
+        });
+      } else {
+        blocks.push({
+          type: "text",
+          key: event.key,
+          text: event.text
+        });
+      }
+    }
+
+    return {
+      statusLines: layout.statusLines,
+      blocks
+    };
+  }
+
   syncMetaBlocks(
     itemEl: HTMLDivElement,
     contentEl: HTMLDivElement,
     message: MessageRecord
   ): void {
-    const layout = this.buildMetaLayout(message);
-    const nextStatusLines = layout.statusLines;
-    const nextPanels = layout.panels;
+    const streamBlocks = this.buildProcessStreamBlocks(message);
+    const layout = streamBlocks ? null : this.buildMetaLayout(message);
+    const nextStatusLines = streamBlocks?.statusLines ?? layout?.statusLines ?? [];
+    const nextBlocks: RenderedProcessBlock[] = streamBlocks?.blocks
+      ?? (layout?.panels ?? []).map((panel) => ({
+        type: "panel" as const,
+        key: panel.kind,
+        panel
+      }));
     const existingStatusLines = findAssistantStatusLines(itemEl);
     const existingPanels = findAssistantMetaPanels(itemEl);
-    if (nextStatusLines.length === 0 && nextPanels.length === 0) {
+    const existingTextBlocks = Array.from(
+      itemEl.querySelectorAll<HTMLElement>(".sidet-process-text[data-process-text-key]")
+    );
+    if (nextStatusLines.length === 0 && nextBlocks.length === 0) {
       existingStatusLines.forEach((line) => line.remove());
       existingPanels.forEach((panel) => panel.remove());
+      existingTextBlocks.forEach((block) => block.remove());
       return;
     }
-
-    const statusLineByKind = new Map<string, HTMLDivElement>();
-    existingStatusLines.forEach((line) => {
-      if (line.instanceOf(HTMLDivElement)) {
-        const kind = line.getAttribute("data-status-kind");
-        if (kind) {
-          statusLineByKind.set(kind, line);
-        }
-      }
-    });
-
-    for (const statusLine of nextStatusLines) {
-      let lineEl = statusLineByKind.get(statusLine.kind);
-      if (lineEl) {
-        statusLineByKind.delete(statusLine.kind);
-      } else {
-        lineEl = itemEl.ownerDocument.createElement("div");
-        lineEl.className = "sidet-message-status-line";
-        lineEl.setAttribute("data-status-kind", statusLine.kind);
-      }
-
-      lineEl.classList.add("sidet-message-status-line");
-      lineEl.setAttribute("data-status-kind", statusLine.kind);
-      lineEl.textContent = statusLine.text;
-      if (lineEl.nextElementSibling !== contentEl) {
-        itemEl.insertBefore(lineEl, contentEl);
-      }
-    }
-
-    statusLineByKind.forEach((lineEl) => lineEl.remove());
 
     const panelByKind = new Map<string, HTMLDetailsElement>();
     existingPanels.forEach((panel) => {
@@ -910,16 +1082,56 @@ export class ChatViewAssistantRendering {
       }
     });
 
+    const textBlockByKey = new Map<string, HTMLElement>();
+    existingTextBlocks.forEach((block) => {
+      const key = block.getAttribute("data-process-text-key");
+      if (key) {
+        textBlockByKey.set(key, block);
+      }
+    });
+
     const streaming = message.status === "streaming";
     const now = Date.now();
     const syncStartedAt = nowMs();
     let bodyBuildCount = 0;
     let previewUpdateCount = 0;
-    for (const panel of nextPanels) {
-      let detailsEl = panelByKind.get(panel.kind);
+    const orderedBlockEls: HTMLElement[] = [];
+    for (const block of nextBlocks) {
+      if (block.type === "text") {
+        const existingTextBlock = textBlockByKey.get(block.key);
+        if (existingTextBlock) {
+          textBlockByKey.delete(block.key);
+        }
+        const displayText = stripAssistantProcessText(block.text);
+        if (!displayText.trim()) {
+          existingTextBlock?.remove();
+          continue;
+        }
+        let textEl = existingTextBlock;
+        if (!textEl) {
+          textEl = itemEl.ownerDocument.createElement("div");
+          textEl.className = "sidet-process-text markdown-rendered";
+          textEl.setAttribute("data-process-text-key", block.key);
+        }
+        const textSignature = `${displayText.length}:${displayText.slice(-48)}`;
+        if (textEl.getAttribute("data-render-signature") !== textSignature) {
+          textEl.empty();
+          textEl.setAttribute("data-render-signature", textSignature);
+          this.options.renderMarkdown(textEl, displayText);
+        }
+        if (textEl.parentElement !== itemEl) {
+          itemEl.insertBefore(textEl, contentEl);
+        }
+        orderedBlockEls.push(textEl);
+        continue;
+      }
+
+      const panel = block.panel;
+      const panelKey = block.key;
+      let detailsEl = panelByKind.get(panelKey);
       let shouldBuildContent = false;
       if (detailsEl) {
-        panelByKind.delete(panel.kind);
+        panelByKind.delete(panelKey);
         const existingParts = findAssistantMetaPanelParts(detailsEl);
         shouldBuildContent = !existingParts.iconEl
           || !existingParts.previewEl
@@ -927,12 +1139,12 @@ export class ChatViewAssistantRendering {
       } else {
         detailsEl = itemEl.ownerDocument.createElement("details");
         detailsEl.className = "sidet-message-meta-panel";
-        detailsEl.setAttribute("data-panel-kind", panel.kind);
+        detailsEl.setAttribute("data-panel-kind", panelKey);
         shouldBuildContent = true;
       }
 
       detailsEl.classList.add("sidet-message-meta-panel");
-      detailsEl.setAttribute("data-panel-kind", panel.kind);
+      detailsEl.setAttribute("data-panel-kind", panelKey);
 
       if (shouldBuildContent) {
         detailsEl.empty();
@@ -955,19 +1167,29 @@ export class ChatViewAssistantRendering {
         detailsEl.createDiv({
           cls: "sidet-message-meta-panel-body"
         });
-        detailsEl.addEventListener("toggle", () => {
-          if (!detailsEl.open) {
-            return;
-          }
-          const current = this.metaPanelStates.get(detailsEl);
-          const parts = findAssistantMetaPanelParts(detailsEl);
-          if (!current || !(parts.bodyEl instanceof HTMLElement)) {
-            return;
-          }
-          this.renderMetaPanelBody(parts.bodyEl, current.panel);
-          current.lastBodyAt = Date.now();
-          current.bodyStale = false;
-        });
+        const bodyEl = detailsEl.querySelector<HTMLElement>(":scope > .sidet-message-meta-panel-body");
+        if (bodyEl) {
+          const renderBody = (): void => {
+            const current = this.metaPanelStates.get(detailsEl);
+            if (!current) {
+              return;
+            }
+            this.renderMetaPanelBody(bodyEl, current.panel);
+            current.lastBodyAt = Date.now();
+            current.bodyStale = false;
+          };
+          detailsEl.addEventListener("toggle", () => {
+            if (detailsEl.open) {
+              renderBody();
+            }
+          });
+          installSmoothDetailsToggle(detailsEl, {
+            bodyEl,
+            onToggle: (open) => {
+              this.options.onUserContentToggle?.(open);
+            }
+          });
+        }
       }
 
       const panelParts = findAssistantMetaPanelParts(detailsEl);
@@ -1012,7 +1234,11 @@ export class ChatViewAssistantRendering {
           streaming
         })
       ) {
-        const nextPreviewText = this.getMetaPanelPreviewText(panel, panelParts.previewEl.textContent ?? "");
+        const nextPreviewText = this.getMetaPanelPreviewText(
+          panel,
+          panelParts.previewEl.textContent ?? "",
+          streaming
+        );
         if (nextPreviewText !== null) {
           panelParts.previewEl.textContent = nextPreviewText;
         }
@@ -1034,28 +1260,75 @@ export class ChatViewAssistantRendering {
           streaming
         })
       ) {
+        const previousBodyScrollTop = panelParts.bodyEl.scrollTop;
         this.renderMetaPanelBody(panelParts.bodyEl, panel);
+        // 展开体内部滚动是用户的阅读位置；流式更新只接着写，不把内部视口拉回顶部。
+        if (previousBodyScrollTop > 0) {
+          panelParts.bodyEl.scrollTop = previousBodyScrollTop;
+        }
         panelState.lastBodyAt = now;
         panelState.bodyStale = false;
         bodyBuildCount += 1;
       }
 
-      if (detailsEl.nextElementSibling !== contentEl) {
+      if (detailsEl.parentElement !== itemEl) {
         itemEl.insertBefore(detailsEl, contentEl);
+      }
+      orderedBlockEls.push(detailsEl);
+    }
+
+    // 事件流按顺序插到正文前：每次同步都按列表重排，避免多块时只挪一格又打乱顺序。
+    for (const blockEl of orderedBlockEls) {
+      itemEl.insertBefore(blockEl, contentEl);
+    }
+
+    const statusLineByKind = new Map<string, HTMLDivElement>();
+    existingStatusLines.forEach((line) => {
+      if (line.instanceOf(HTMLDivElement)) {
+        const kind = line.getAttribute("data-status-kind");
+        if (kind) {
+          statusLineByKind.set(kind, line);
+        }
+      }
+    });
+
+    const statusAnchor: Element = orderedBlockEls[0] ?? contentEl;
+    for (const statusLine of nextStatusLines) {
+      let lineEl = statusLineByKind.get(statusLine.kind);
+      if (lineEl) {
+        statusLineByKind.delete(statusLine.kind);
+      } else {
+        lineEl = itemEl.ownerDocument.createElement("div");
+        lineEl.className = "sidet-message-status-line";
+        lineEl.setAttribute("data-status-kind", statusLine.kind);
+      }
+
+      lineEl.classList.add("sidet-message-status-line");
+      lineEl.setAttribute("data-status-kind", statusLine.kind);
+      lineEl.textContent = statusLine.text;
+      if (lineEl.nextElementSibling !== statusAnchor) {
+        itemEl.insertBefore(lineEl, statusAnchor);
       }
     }
 
+    statusLineByKind.forEach((lineEl) => lineEl.remove());
     panelByKind.forEach((panelEl) => panelEl.remove());
+    textBlockByKey.forEach((textEl) => textEl.remove());
     recordChatRenderTrace("meta-panels", {
       durationMs: Math.round((nowMs() - syncStartedAt) * 10) / 10,
-      panelCount: nextPanels.length,
+      panelCount: nextBlocks.filter((block) => block.type === "panel").length,
+      textBlockCount: nextBlocks.filter((block) => block.type === "text").length,
       bodyBuildCount,
       previewUpdateCount,
       streaming
     });
   }
 
-  private getMetaPanelPreviewText(panel: RenderedMetaPanelBlock, previousPreview: string): string | null {
+  private getMetaPanelPreviewText(
+    panel: RenderedMetaPanelBlock,
+    previousPreview: string,
+    streaming: boolean
+  ): string | null {
     const previewTarget = panel.sections?.length ? panel.sections[panel.sections.length - 1] : panel;
     if (previewTarget.sources?.length) {
       const sourceTitles = previewTarget.sources.map((source) => source.title).filter(Boolean);
@@ -1067,7 +1340,11 @@ export class ChatViewAssistantRendering {
     }
 
     const text = previewTarget.text?.trim() ?? "";
-    const stableText = this.getStableStreamingText(text, previousPreview);
+    // 流式时才需要「稳定文本」避免抖动；终态要展示完整尾部，否则以 URL /
+    // 路径 / key: value 结尾的最后一行会被永久截掉。
+    const stableText = streaming
+      ? this.getStableStreamingText(text, previousPreview)
+      : text;
     if (!stableText.trim()) {
       if (previousPreview) {
         return null;

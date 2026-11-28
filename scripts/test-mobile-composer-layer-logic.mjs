@@ -1416,6 +1416,281 @@ function assertLayerCloseRestoresPinnedBottom(module) {
   }
 }
 
+function assertKeyboardSettledReservedSpaceUsesLiveGeometry(module) {
+  const environment = installEnvironment();
+  try {
+    const contentEl = createElement("div", [
+      "sidet-chat-view",
+      "is-phone-layout",
+      "is-mobile-runtime"
+    ]);
+    contentEl.ownerDocument = environment.ownerDocument;
+    contentEl.clientHeight = 800;
+    contentEl.getBoundingClientRect = () => ({
+      top: 0,
+      right: 390,
+      bottom: 800,
+      left: 0,
+      width: 390,
+      height: 800
+    });
+    globalThis.window.getComputedStyle = () => ({ paddingBottom: "0px" });
+    const rootEl = createElement("div", ["sidet-chat-root"]);
+    rootEl.getBoundingClientRect = () => ({
+      top: 0,
+      right: 378,
+      bottom: 800,
+      left: 12,
+      width: 366,
+      height: 800
+    });
+    const composerWrapEl = createElement("div", ["sidet-composer-wrap"]);
+    composerWrapEl.getBoundingClientRect = () => ({
+      top: 700,
+      right: 390,
+      bottom: 780,
+      left: 0,
+      width: 390,
+      height: 80
+    });
+    const textareaEl = createElement("textarea", ["sidet-textarea"]);
+    textareaEl.readOnly = false;
+    composerWrapEl.appendChild(textareaEl);
+    rootEl.appendChild(composerWrapEl);
+    contentEl.appendChild(rootEl);
+    const spacerEl = createElement("div", ["sidet-messages-bottom-spacer"]);
+
+    const runtime = new module.ChatViewMobileComposer({
+      desktopBottomMessageGap: 24,
+      bottomPinThreshold: 40,
+      getContentEl: () => contentEl,
+      getRootEl: () => rootEl,
+      getMessagesBottomSpacerEl: () => spacerEl,
+      getScrollHost: () => contentEl,
+      setScrollHostTop: () => {},
+      updatePinnedToBottom: () => {},
+      syncScrollBottomButtonVisibility: () => {},
+      syncScrollAffordances: () => {},
+      positionFloatingControls: () => {},
+      syncLayoutClasses: () => {},
+      getDraftText: () => "",
+      getComposerPlaceholder: () => "输入消息",
+      focusComposerTextarea: (target) => target?.focus?.(),
+      syncComposerButtons: () => {},
+      isComposerReadOnly: () => false,
+      isPhoneLayout: () => true,
+      isMobileRuntime: () => true,
+      getPendingScrollIntent: () => "none",
+      hasComposerResizeObserver: () => true,
+      isHomeState: () => false,
+      onComposerLayerChange: () => {},
+      onNativeActivationEvent: () => {}
+    });
+    runtime.attachMainComposerElements({
+      composerWrapEl,
+      composerEl: null,
+      attachmentStripEl: null,
+      inputShellEl: null,
+      textareaEl,
+      textareaMirrorEl: null,
+      expandButtonEl: null
+    });
+
+    runtime.scheduleViewportSync();
+    assert.equal(
+      contentEl.style.getPropertyValue("--sidet-composer-reserved-space"),
+      "124px",
+      "the resting geometry must seed the frozen mobile bottom space"
+    );
+
+    runtime.layerRuntime.prepareForFocus();
+    runtime.keyboardFollowRuntime.isFollowing = () => true;
+    // 宿主压矮 300px，composer 只抬起 220px：真实需要的留白比冻结值小 80px。
+    // 若继续用冻结值，贴底跟随会在底部留下一段多余空白。
+    contentEl.getBoundingClientRect = () => ({
+      top: 0,
+      right: 390,
+      bottom: 500,
+      left: 0,
+      width: 390,
+      height: 500
+    });
+    composerWrapEl.getBoundingClientRect = () => ({
+      top: 480,
+      right: 390,
+      bottom: 560,
+      left: 0,
+      width: 390,
+      height: 80
+    });
+    runtime.syncFocusedReservedSpace();
+    assert.equal(
+      contentEl.style.getPropertyValue("--sidet-composer-reserved-space"),
+      "44px",
+      "the settled keyboard state must use live geometry instead of the frozen resting value"
+    );
+    assert.equal(
+      spacerEl.style.getPropertyValue("height"),
+      "44px",
+      "the message spacer must shrink with the live keyboard geometry"
+    );
+
+    runtime.keyboardFollowRuntime.isFollowing = () => false;
+    runtime.clearFocusedReservedSpace();
+    assert.equal(
+      contentEl.style.getPropertyValue("--sidet-composer-reserved-space"),
+      "124px",
+      "closing the keyboard must restore the frozen resting space"
+    );
+  } finally {
+    environment.restore();
+  }
+}
+
+function assertHomeKeyboardNeverInflatesBottomSpacer(module) {
+  const environment = installEnvironment();
+  try {
+    const contentEl = createElement("div", [
+      "sidet-chat-view",
+      "is-phone-layout",
+      "is-mobile-runtime"
+    ]);
+    contentEl.ownerDocument = environment.ownerDocument;
+    contentEl.clientHeight = 800;
+    contentEl.getBoundingClientRect = () => ({
+      top: 0,
+      right: 390,
+      bottom: 800,
+      left: 0,
+      width: 390,
+      height: 800
+    });
+    globalThis.window.getComputedStyle = () => ({ paddingBottom: "0px" });
+    const rootEl = createElement("div", ["sidet-chat-root"]);
+    rootEl.getBoundingClientRect = () => ({
+      top: 0,
+      right: 378,
+      bottom: 800,
+      left: 12,
+      width: 366,
+      height: 800
+    });
+    const composerWrapEl = createElement("div", ["sidet-composer-wrap"]);
+    composerWrapEl.getBoundingClientRect = () => ({
+      top: 700,
+      right: 390,
+      bottom: 780,
+      left: 0,
+      width: 390,
+      height: 80
+    });
+    const textareaEl = createElement("textarea", ["sidet-textarea"]);
+    textareaEl.readOnly = false;
+    composerWrapEl.appendChild(textareaEl);
+    rootEl.appendChild(composerWrapEl);
+    contentEl.appendChild(rootEl);
+    const spacerEl = createElement("div", ["sidet-messages-bottom-spacer"]);
+
+    const runtime = new module.ChatViewMobileComposer({
+      desktopBottomMessageGap: 24,
+      bottomPinThreshold: 40,
+      getContentEl: () => contentEl,
+      getRootEl: () => rootEl,
+      getMessagesBottomSpacerEl: () => spacerEl,
+      getScrollHost: () => contentEl,
+      setScrollHostTop: () => {},
+      updatePinnedToBottom: () => {},
+      syncScrollBottomButtonVisibility: () => {},
+      syncScrollAffordances: () => {},
+      positionFloatingControls: () => {},
+      syncLayoutClasses: () => {},
+      getDraftText: () => "",
+      getComposerPlaceholder: () => "输入消息",
+      focusComposerTextarea: (target) => target?.focus?.(),
+      syncComposerButtons: () => {},
+      isComposerReadOnly: () => false,
+      isPhoneLayout: () => true,
+      isMobileRuntime: () => true,
+      getPendingScrollIntent: () => "none",
+      hasComposerResizeObserver: () => true,
+      isHomeState: () => true,
+      onComposerLayerChange: () => {},
+      onNativeActivationEvent: () => {}
+    });
+    runtime.attachMainComposerElements({
+      composerWrapEl,
+      composerEl: null,
+      attachmentStripEl: null,
+      inputShellEl: null,
+      textareaEl,
+      textareaMirrorEl: null,
+      expandButtonEl: null
+    });
+
+    runtime.scheduleViewportSync();
+    assert.equal(
+      contentEl.style.getPropertyValue("--sidet-composer-reserved-space"),
+      "0px",
+      "the home resting state must never reserve keyboard space"
+    );
+
+    runtime.layerRuntime.prepareForFocus();
+    runtime.keyboardFollowRuntime.isFollowing = () => true;
+    // 键盘抬起后 composer 在 body layer 的顶边，和对话页贴底布局同形；
+    // 主页不应把这 344px 的差写进内容流底部留白。
+    composerWrapEl.getBoundingClientRect = () => ({
+      top: 480,
+      right: 390,
+      bottom: 560,
+      left: 0,
+      width: 390,
+      height: 80
+    });
+    runtime.syncFocusedReservedSpace();
+    assert.equal(
+      spacerEl.style.getPropertyValue("height"),
+      "0px",
+      "focusing the home composer must not inflate the content spacer"
+    );
+    assert.equal(
+      runtime.focusedReservedSpace,
+      null,
+      "home focus must not record a conversation-style frozen reserved space"
+    );
+
+    runtime.syncFocusedReservedSpaceFrame(480);
+    assert.equal(
+      spacerEl.style.getPropertyValue("height"),
+      "0px",
+      "the framed keyboard path must skip the home spacer"
+    );
+
+    // 极端兜底：即使 spacer 被外部逐帧写成键盘高度，收口写 0 时不能因为
+    // lastReservedSpace 已经是 0 就跳过，否则主页会留下滚不回去的空白。
+    spacerEl.style.setProperty("height", "344px");
+    runtime.updateComposerReservedSpace();
+    assert.equal(
+      spacerEl.style.getPropertyValue("height"),
+      "0px",
+      "the reserved-space cache must not hide a stale inline spacer height"
+    );
+
+    runtime.clearFocusedReservedSpace();
+    assert.equal(
+      spacerEl.style.getPropertyValue("height"),
+      "0px",
+      "closing the home keyboard must leave the spacer at zero"
+    );
+    assert.equal(
+      contentEl.style.getPropertyValue("--sidet-composer-reserved-space"),
+      "0px",
+      "closing the home keyboard must leave the reserved-space token at zero"
+    );
+  } finally {
+    environment.restore();
+  }
+}
+
 async function main() {
   try {
     const layerModule = await loadMobileComposerLayerModule();
@@ -1430,6 +1705,8 @@ async function main() {
     assertActivationSurvivesPointerCaptureFailure(mobileComposerModule);
     assertActivationTailPressDefaultIsSuppressedOnce(mobileComposerModule);
     assertLayerCloseRestoresPinnedBottom(mobileComposerModule);
+    assertKeyboardSettledReservedSpaceUsesLiveGeometry(mobileComposerModule);
+    assertHomeKeyboardNeverInflatesBottomSpacer(mobileComposerModule);
     assertDrawerOwnershipDriftRestoresOriginalComposerParent(
       layerModule,
       workspaceOwnershipModule

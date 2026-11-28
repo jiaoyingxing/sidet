@@ -31,9 +31,14 @@ import { ChatViewAssistantRendering } from "./chat-view-assistant-rendering";
 import { hasPartialErrorContent } from "./chat-view-answer-presentation";
 import { ChatViewSourceModal, type AnswerSourceTarget } from "./chat-view-source-modal";
 import { ChatViewMobileComposer } from "./chat-view-mobile-composer";
+import {
+  recordMobileInputProbeSample,
+  resetMobileInputProbe
+} from "./chat-view-mobile-input-probe";
 import { ChatViewContextIntake } from "./chat-view-context-intake";
 import { ChatViewDraftRuntime } from "./chat-view-draft-runtime";
 import {
+  CHAT_HOME_CAPABILITY_LABELS,
   renderChatHome,
   setChatHomeCapabilitySelected,
   type ChatHomeCapability,
@@ -151,6 +156,12 @@ export class ChatView extends ItemView {
   private sendButtons: SendButtonControl[] = [];
   private scrollBottomButtonEl: HTMLButtonElement | null = null;
   private scrollPinnedToBottom = true;
+  /** 移动聚焦开始时的贴底快照：决定键盘落定后是否跟随到底部。 */
+  private mobileFocusPinnedToBottom = false;
+  /** 键盘让位期间用户自己动手（滚轮 / 触摸 / 按下）后取消本次跟随。 */
+  private mobileFocusFollowCancelled = false;
+  private mobileInputProbeTimer: number | null = null;
+  private mobileInputProbeStopTimer: number | null = null;
   private lastFocusComposerNonce = 0;
   private disposeCallbacks: Array<() => void> = [];
   private composerModal: ComposerModal | null = null;
@@ -159,6 +170,7 @@ export class ChatView extends ItemView {
   private messageRenderComponents: Component[] = [];
   private messageHighlightTimer: number | null = null;
   private composerResizeObserver: ResizeObserver | null = null;
+  private messageListResizeObserver: ResizeObserver | null = null;
   private homeComposerSlotEl: HTMLDivElement | null = null;
   private homeCapabilityRowEl: HTMLDivElement | null = null;
   private homeCapabilityEls = new Map<ChatHomeCapabilityId, HTMLDivElement>();
@@ -245,7 +257,12 @@ export class ChatView extends ItemView {
       controller: this.controller,
       leaf: this.leaf,
       copyText: (text) => this.messageActions.copyTextToClipboard(text),
-      renderMarkdown: (parentEl, markdown) => this.renderAnswerMarkdown(parentEl, markdown)
+      renderMarkdown: (parentEl, markdown) => this.renderAnswerMarkdown(parentEl, markdown),
+      onCardToggle: (expanded) => this.handleContentToggle(expanded),
+      onDetailsToggle: (open) => this.handleContentToggle(open),
+      onBeforeUserContentChange: () => {
+        this.holdBottomIntentForUserAction();
+      }
     });
     this.assistantRendering = new ChatViewAssistantRendering({
       getApp: () => this.controller.getApp(),
@@ -261,6 +278,8 @@ export class ChatView extends ItemView {
       setScrollPinnedToBottom: (value) => {
         this.scrollPinnedToBottom = value;
       },
+      refreshPinnedToBottom: () => this.updatePinnedToBottom(),
+      onUserContentToggle: (open) => this.handleContentToggle(open),
       getLastConversationId: () => this.conversationRuntime.getLastConversationId(),
       getLastRenderedMessageCount: () => this.conversationRuntime.getLastRenderedMessageCount(),
       setLastRenderedMessageCount: (count) => {
@@ -283,6 +302,7 @@ export class ChatView extends ItemView {
       getMessagesListEl: () => this.messagesListEl,
       renderConversation: () => this.renderConversation(),
       setPlainMessageContent: (contentEl, text) => this.setPlainMessageContent(contentEl, text),
+      renderMarkdown: (parentEl, markdown) => this.renderAnswerMarkdown(parentEl, markdown),
       renderInlineToolAction: (parentEl, conversation, message) =>
         this.assistantActions.renderInlineToolAction(parentEl, conversation, message),
       renderWikiMaintenancePlanAction: (parentEl, conversation, message) =>
@@ -376,6 +396,15 @@ export class ChatView extends ItemView {
       isHomeState: () => this.homeComposerSlotEl !== null,
       onNativeActivationEvent: (event) => {
         this.recordMobileHomeInputLifecycle(event);
+      },
+      onKeyboardPresentationSettled: () => {
+        this.handleMobileKeyboardPresentationFollow();
+      },
+      onKeyboardPresentationFrame: () => {
+        this.handleMobileKeyboardPresentationFrame();
+      },
+      onKeyboardReservedSpaceChanged: () => {
+        this.handleMobileKeyboardPresentationFollow();
       },
       onComposerLayerChange: (active) => {
         if (active) {
@@ -495,6 +524,7 @@ export class ChatView extends ItemView {
 
   override async onClose(): Promise<void> {
     this.cancelMobileHomeLifecycleGeometryCapture();
+    this.stopMobileInputProbe();
     this.commitDraft({ immediatePersistence: true });
     this.mobileComposer.release();
     this.inlineSuggests.closeAll();
@@ -516,6 +546,7 @@ export class ChatView extends ItemView {
     this.cancelHomeComposerPositionSync();
     this.clearHomeComposerPosition();
     this.exitMobileHomeInputState();
+    this.cancelHomeComposerPositionSync();
     this.homeComposerSlotEl = null;
     this.mobileHomeWorkspaceAnchor = null;
     this.homeCapabilityRowEl = null;
@@ -545,6 +576,7 @@ export class ChatView extends ItemView {
     this.clearDesktopPaneMinWidth();
     this.assistantRendering.release();
     this.disconnectComposerResizeObserver();
+    this.disconnectMessageListResizeObserver();
     for (const dispose of this.disposeCallbacks) {
       dispose();
     }
@@ -710,6 +742,7 @@ export class ChatView extends ItemView {
     });
 
     this.startComposerResizeObserver();
+    this.startMessageListResizeObserver();
     this.contextIntake.syncDraftAttachmentChips();
     this.syncComposerLayout();
     this.syncComposerButtons();
@@ -778,49 +811,75 @@ export class ChatView extends ItemView {
     return [
       {
         id: "knowledge-base",
-        label: "知识库",
+        label: CHAT_HOME_CAPABILITY_LABELS["knowledge-base"],
         icon: "layers",
         selected: this.isHomeCapabilitySelected("knowledge-base"),
-        onSelect: () => {
-          this.setHomeWikiCardSelected(false);
-          this.controller.setSelectedKnowledgeBase(this.leaf, ALL_KNOWLEDGE_BASES_SELECTION);
-          this.focusActiveComposerTextarea();
+        onSelect: (anchorEl) => {
+          if (this.isHomeCapabilitySelected("knowledge-base")) {
+            this.controller.setSelectedKnowledgeBase(this.leaf, null);
+          } else {
+            this.setHomeWikiCardSelected(false);
+            this.controller.setSelectedKnowledgeBase(this.leaf, ALL_KNOWLEDGE_BASES_SELECTION);
+          }
+          this.finishHomeCapabilityToggle(anchorEl);
         }
       },
       {
         id: "web-clipping",
-        label: "网页剪藏",
+        label: CHAT_HOME_CAPABILITY_LABELS["web-clipping"],
         icon: "clipboard",
         selected: this.isHomeCapabilitySelected("web-clipping"),
-        onSelect: () => {
+        onSelect: (anchorEl) => {
+          if (this.isHomeCapabilitySelected("web-clipping")) {
+            this.contextIntake.clearDraftWebpageAttachments();
+            this.finishHomeCapabilityToggle(anchorEl);
+            return;
+          }
           this.setHomeWikiCardSelected(false);
           this.contextIntake.openWebpageAttachmentPicker();
         }
       },
       {
         id: "web-search",
-        label: "联网搜索",
+        label: CHAT_HOME_CAPABILITY_LABELS["web-search"],
         icon: "globe",
         selected: this.isHomeCapabilitySelected("web-search"),
-        onSelect: () => {
-          this.setHomeWikiCardSelected(false);
-          this.controller.setWebSearchEnabled(this.leaf, true);
-          this.focusActiveComposerTextarea();
+        onSelect: (anchorEl) => {
+          if (this.isHomeCapabilitySelected("web-search")) {
+            this.controller.setWebSearchEnabled(this.leaf, false);
+          } else {
+            this.setHomeWikiCardSelected(false);
+            this.controller.setWebSearchEnabled(this.leaf, true);
+          }
+          this.finishHomeCapabilityToggle(anchorEl);
         }
       },
       {
         id: "wiki-card",
-        label: "Wiki卡片",
+        label: CHAT_HOME_CAPABILITY_LABELS["wiki-card"],
         icon: "book-open",
         selected: this.isHomeCapabilitySelected("wiki-card"),
-        onSelect: () => {
-          this.controller.setSelectedKnowledgeBase(this.leaf, null);
-          this.controller.setWebSearchEnabled(this.leaf, false);
-          this.setHomeWikiCardSelected(true);
-          this.focusActiveComposerTextarea();
+        onSelect: (anchorEl) => {
+          if (this.isHomeCapabilitySelected("wiki-card")) {
+            this.setHomeWikiCardSelected(false);
+          } else {
+            this.controller.setSelectedKnowledgeBase(this.leaf, null);
+            this.controller.setWebSearchEnabled(this.leaf, false);
+            this.setHomeWikiCardSelected(true);
+          }
+          this.finishHomeCapabilityToggle(anchorEl);
         }
       }
     ];
+  }
+
+  private finishHomeCapabilityToggle(anchorEl: HTMLElement): void {
+    // 移动端宿主可能在点击后补一次焦点，chip 会留在 focus 态；先清掉
+    // chip 自己的焦点，再把焦点交回输入框。
+    if (anchorEl.ownerDocument.activeElement === anchorEl) {
+      anchorEl.blur();
+    }
+    this.focusActiveComposerTextarea();
   }
 
   private isHomeCapabilitySelected(capabilityId: ChatHomeCapabilityId): boolean {
@@ -873,6 +932,10 @@ export class ChatView extends ItemView {
       this.mobileHomeWorkspaceAnchor = null;
     }
     this.homeComposerSlotEl = slotEl;
+    if (slotEl === null) {
+      // 等这一轮对话 DOM 渲染完再补留白；主页槽位清空发生在消息列表重建之前。
+      window.setTimeout(() => this.mobileComposer.handleHomeStateExited(), 0);
+    }
     const isHomeState = slotEl !== null;
     this.rootEl?.classList.toggle("is-home-state", isHomeState);
 
@@ -880,6 +943,11 @@ export class ChatView extends ItemView {
       this.setScrollHostTop(0);
       this.contextIntake.syncDraftAttachmentChips();
       this.syncHomeCapabilityVisibility();
+      // 新槽位必须马上有一份坐标：只排下一帧 rAF 时，后台叶子、刚创建还没
+      // 拿到尺寸或 rAF 被节流都会留下空变量，composer 会按默认值落到根顶部
+      // （用户 2026-11-28 反馈「+ 新建对话偶尔浮到 chip 上方」）。同步写一次，
+      // 尺寸为 0 或输入层仍激活时由 writer 自己拒绝，调度仍然保留。
+      this.syncHomeComposerPosition();
       this.scheduleHomeComposerPositionSync();
     } else {
       this.homeCapabilityRowEl = null;
@@ -944,6 +1012,11 @@ export class ChatView extends ItemView {
     }
     this.composerWrapEl?.removeClass("is-home-input-state");
     this.rootEl?.removeClass("is-home-input-state");
+    // 退出输入态时 capability row 已回到主页，槽位几何就是休息态；丢掉输入期
+    // 的锚点并立刻重写一次，避免旧变量/空变量把 composer 留在 chip 上方。
+    // 输入层仍激活（主页重建等）或视图尺寸为 0 时由 writer 自己拒绝。
+    this.mobileHomeWorkspaceAnchor = null;
+    this.syncHomeComposerPosition();
     this.scheduleHomeComposerPositionSync();
   }
 
@@ -954,7 +1027,8 @@ export class ChatView extends ItemView {
     for (const [capabilityId, chipEl] of this.homeCapabilityEls) {
       setChatHomeCapabilitySelected(
         chipEl,
-        this.isHomeCapabilitySelected(capabilityId)
+        this.isHomeCapabilitySelected(capabilityId),
+        CHAT_HOME_CAPABILITY_LABELS[capabilityId]
       );
     }
     this.scheduleHomeComposerPositionSync();
@@ -985,6 +1059,19 @@ export class ChatView extends ItemView {
     const slotEl = this.homeComposerSlotEl;
     const rootEl = this.rootEl;
     if (!slotEl?.isConnected || !rootEl?.isConnected) {
+      return;
+    }
+    // 输入层激活时 composer 在 body layer，主页槽位坐标不参与显示；此时 chip
+    // 行已被搬进 composer wrapper，读到的 slot 是「chip 已搬走」的过渡几何，
+    // 写下去会让退出输入态后的 composer 停在 chip 上方。
+    if (this.mobileComposer.isComposerLayerActive()) {
+      return;
+    }
+    // 隐藏叶子 / 刚创建还没有尺寸：0 尺寸写进去会把 composer 钉在根左上角；
+    // 等视图可见后的尺寸变化或后续调度再写。
+    const slotProbe = slotEl.getBoundingClientRect();
+    if (slotProbe.width <= 0 || slotProbe.height <= 0) {
+      this.recordMobileHomeInputLifecycle("home.position.hidden");
       return;
     }
     if (this.shouldPreserveMobileHomeWorkspaceAnchor()) {
@@ -1022,7 +1109,7 @@ export class ChatView extends ItemView {
       }
     }
 
-    const slotRect = slotEl.getBoundingClientRect();
+    const slotRect = slotProbe;
     const rootRect = rootEl.getBoundingClientRect();
     const scrollTop = this.messagesEl?.scrollTop ?? 0;
     const slotMetrics = resolveHomeComposerSlot(slotRect, rootRect, scrollTop);
@@ -1249,8 +1336,21 @@ export class ChatView extends ItemView {
       this.syncScrollBottomButtonVisibility();
     };
     scrollHost.addEventListener("scroll", onScroll);
+    // 展开 / 版本切换期间的布局滚动不算用户滚动；真实手势立即释放贴底锁定。
+    const releaseBottomFollowIntent = () => {
+      this.assistantRendering.releaseBottomFollowIntent();
+      if (this.mobileFocusPinnedToBottom) {
+        this.mobileFocusFollowCancelled = true;
+      }
+    };
+    scrollHost.addEventListener("wheel", releaseBottomFollowIntent, { passive: true });
+    scrollHost.addEventListener("touchstart", releaseBottomFollowIntent, { passive: true });
+    scrollHost.addEventListener("pointerdown", releaseBottomFollowIntent);
     this.disposeCallbacks.push(() => {
       scrollHost.removeEventListener("scroll", onScroll);
+      scrollHost.removeEventListener("wheel", releaseBottomFollowIntent);
+      scrollHost.removeEventListener("touchstart", releaseBottomFollowIntent);
+      scrollHost.removeEventListener("pointerdown", releaseBottomFollowIntent);
     });
 
     const onViewportChange = () => this.scheduleViewportSync();
@@ -1369,7 +1469,157 @@ export class ChatView extends ItemView {
   }
 
   private syncMobileComposerFocusState(isFocused: boolean): void {
+    if (isFocused && this.isPhoneLayout() && this.isMobileRuntime()) {
+      // 用真实几何在聚焦瞬间记录意图，不读可能已过期的 pin；键盘让位期间
+      // 布局滚动不清意图，真实滚轮 / 触摸 / 按下会取消。
+      this.mobileFocusPinnedToBottom = this.isScrollHostAtBottom();
+      this.mobileFocusFollowCancelled = false;
+      if (this.mobileFocusPinnedToBottom) {
+        this.assistantRendering.holdBottomFollowIntent(1500);
+      }
+      this.startMobileInputProbe();
+    } else {
+      if (this.mobileInputProbeTimer !== null) {
+        this.captureMobileInputProbeSample("focus.blur");
+        this.continueMobileInputProbeAfterBlur();
+      } else {
+        this.stopMobileInputProbe();
+      }
+      this.mobileFocusPinnedToBottom = false;
+      this.mobileFocusFollowCancelled = false;
+      this.assistantRendering.releaseBottomFollowIntent();
+    }
     this.mobileComposer.syncMobileComposerFocusState(isFocused);
+  }
+
+  /**
+   * 排障探针：聚焦后连续采样 6 秒（60ms 一次），覆盖两段式键盘避让、
+   * 留白重算与跟随全过程；只留在内存，由诊断命令复制回传。
+   */
+  private startMobileInputProbe(): void {
+    this.stopMobileInputProbe();
+    resetMobileInputProbe();
+    this.captureMobileInputProbeSample("focus.begin");
+    this.mobileInputProbeTimer = window.setInterval(() => {
+      this.captureMobileInputProbeSample("sample");
+    }, 60);
+    this.mobileInputProbeStopTimer = window.setTimeout(() => {
+      this.stopMobileInputProbe();
+    }, 6000);
+  }
+
+  private stopMobileInputProbe(): void {
+    if (this.mobileInputProbeTimer !== null) {
+      window.clearInterval(this.mobileInputProbeTimer);
+      this.mobileInputProbeTimer = null;
+    }
+    if (this.mobileInputProbeStopTimer !== null) {
+      window.clearTimeout(this.mobileInputProbeStopTimer);
+      this.mobileInputProbeStopTimer = null;
+    }
+  }
+
+  /**
+   * 失焦后键盘回落、宿主恢复内容区高度是另一段时间线；单独补采 1.6 秒，
+   * 让「收回是否也割裂」有同一份数据可对齐。
+   */
+  private continueMobileInputProbeAfterBlur(): void {
+    if (this.mobileInputProbeTimer === null) {
+      return;
+    }
+    window.clearInterval(this.mobileInputProbeTimer);
+    if (this.mobileInputProbeStopTimer !== null) {
+      window.clearTimeout(this.mobileInputProbeStopTimer);
+      this.mobileInputProbeStopTimer = null;
+    }
+    this.mobileInputProbeTimer = window.setInterval(() => {
+      this.captureMobileInputProbeSample("blur.sample");
+    }, 60);
+    this.mobileInputProbeStopTimer = window.setTimeout(() => {
+      this.stopMobileInputProbe();
+    }, 1600);
+  }
+
+  private captureMobileInputProbeSample(label: string): void {
+    const contentEl = this.contentEl;
+    const scrollHost = this.getScrollHost();
+    const round = (value: number): number => Math.round(value);
+    const readRect = (element: Element | null): Record<string, number> | null => {
+      if (!element) {
+        return null;
+      }
+      const rect = element.getBoundingClientRect();
+      return { top: round(rect.top), bottom: round(rect.bottom), height: round(rect.height) };
+    };
+    const viewport = window.visualViewport;
+    const contentStyle = getComputedStyle(contentEl);
+    recordMobileInputProbeSample(label, {
+      viewport: {
+        innerWidth: round(window.innerWidth),
+        innerHeight: round(window.innerHeight),
+        visualHeight: viewport ? round(viewport.height) : null,
+        visualOffsetTop: viewport ? round(viewport.offsetTop) : null,
+        visualPageTop: viewport ? round(viewport.pageTop) : null,
+        hasFocus: document.hasFocus(),
+        hidden: document.hidden
+      },
+      content: {
+        rect: readRect(contentEl),
+        paddingBottom: contentStyle.paddingBottom,
+        className: contentEl.className,
+        reservedSpace: contentStyle.getPropertyValue("--sidet-composer-reserved-space")
+      },
+      scrollHost: {
+        isContentEl: scrollHost === contentEl,
+        rect: readRect(scrollHost),
+        scrollTop: round(scrollHost.scrollTop),
+        scrollHeight: round(scrollHost.scrollHeight),
+        clientHeight: round(scrollHost.clientHeight),
+        distance: round(
+          scrollHost.scrollHeight - scrollHost.scrollTop - scrollHost.clientHeight
+        )
+      },
+      intent: {
+        focusPinned: this.mobileFocusPinnedToBottom,
+        cancelled: this.mobileFocusFollowCancelled,
+        pinned: this.scrollPinnedToBottom
+      },
+      hostVars: {
+        keyboardHeight: getComputedStyle(document.body).getPropertyValue("--keyboard-height"),
+        restingComposerBottom: contentStyle.getPropertyValue(
+          "--sidet-mobile-resting-composer-bottom"
+        )
+      },
+      composer: this.mobileComposer.getMobileInputDiagnosticSnapshot()
+    });
+  }
+
+  /**
+   * 贴底聚焦时键盘 inset 会把最后一段内容压到输入框下面。键盘开始上浮后，
+   * 留白每帧都由 composer 的实时位置重算；这里在同一帧把滚动补到新底部，
+   * 内容与输入框共用一条运动，不再叠第三段平滑追底。浏览中聚焦或用户已
+   * 动手取消时保持阅读锚点不动。
+   */
+  private handleMobileKeyboardPresentationFollow(): void {
+    if (this.mobileInputProbeTimer !== null) {
+      this.captureMobileInputProbeSample("follow.trigger");
+    }
+    if (!this.mobileFocusPinnedToBottom || this.mobileFocusFollowCancelled) {
+      return;
+    }
+    this.assistantRendering.holdBottomFollowIntent(600);
+    this.assistantRendering.anchorBottomForKeyboardPresentation();
+  }
+
+  /**
+   * 开场逐帧只补滚动。意图与 pin 在开场那一帧已经锁定；每帧再走一遍
+   * 虚拟窗口 / affordances 会把主线程拖出抖动，观感就不丝滑了。
+   */
+  private handleMobileKeyboardPresentationFrame(): void {
+    if (!this.mobileFocusPinnedToBottom || this.mobileFocusFollowCancelled) {
+      return;
+    }
+    this.setScrollHostTop(this.getScrollBottomTarget());
   }
 
   private startComposerResizeObserver(): void {
@@ -1398,8 +1648,69 @@ export class ChatView extends ItemView {
     this.composerResizeObserver = null;
   }
 
+  /**
+   * 消息内容展开 / 异步补齐只改变列表高度，不产生滚动事件；这里把高度变化
+   * 接回现有贴底跟随入口，避免贴底阅读在「查看内容」「展开来源」等动作后
+   * 停在半空。主页展示态与空态不参与。
+   */
+  private startMessageListResizeObserver(): void {
+    if (!this.messagesListEl || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    this.disconnectMessageListResizeObserver();
+    this.messageListResizeObserver = new ResizeObserver(() => {
+      if (!this.conversationRuntime.hasConversationMessagesRendered()) {
+        return;
+      }
+      this.assistantRendering.handleContentResize();
+    });
+    this.messageListResizeObserver.observe(this.messagesListEl);
+    this.assistantRendering.resetContentHeightBaseline();
+  }
+
+  private disconnectMessageListResizeObserver(): void {
+    this.messageListResizeObserver?.disconnect();
+    this.messageListResizeObserver = null;
+  }
+
   private updatePinnedToBottom(): void {
     this.assistantRendering.updatePinnedToBottom(ChatView.BOTTOM_PIN_THRESHOLD);
+  }
+
+  private suppressContentFollowForToggle(): void {
+    this.assistantRendering.suppressContentResizeFollow(320);
+    window.setTimeout(() => this.updatePinnedToBottom(), 340);
+  }
+
+  /** 滚动宿主是否贴在底部；动作前快照用它，不看可能已被瞬时事件改写的 pin。 */
+  private isScrollHostAtBottom(): boolean {
+    const scrollHost = this.getScrollHost();
+    return (
+      scrollHost.scrollHeight - scrollHost.scrollTop - scrollHost.clientHeight <=
+      ChatView.BOTTOM_PIN_THRESHOLD
+    );
+  }
+
+  /**
+   * 用户主动开合内容：展开时如果本来就在底部，锁定贴底意图并跟到底；
+   * 收起保持现状（浏览器夹紧即可），不把展开的增长抑制掉。
+   */
+  private handleContentToggle(expanded: boolean): void {
+    if (!expanded) {
+      this.suppressContentFollowForToggle();
+      return;
+    }
+    this.holdBottomIntentForUserAction();
+  }
+
+  /** 版本切换等内容变化前调用：用户本来在底部时，跨过异步渲染继续跟底。 */
+  private holdBottomIntentForUserAction(): void {
+    if (!this.isScrollHostAtBottom()) {
+      return;
+    }
+    this.assistantRendering.holdBottomFollowIntent(1200);
+    this.assistantRendering.requestBottomFollow("smooth");
   }
 
   private scrollMessagesToBottom(options: { keepPinned?: boolean } = {}): void {

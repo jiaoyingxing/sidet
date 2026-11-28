@@ -40,7 +40,8 @@ function parseHeaderFields(headerText: string): Record<string, string> {
   return fields;
 }
 
-function sanitizeFencedText(text: string): string {
+/** 协议块内容里不允许出现嵌套三反引号；工具结果与检索结果共用同一条转义规则。 */
+export function sanitizeFencedText(text: string): string {
   return text.replace(/```/g, "'''");
 }
 

@@ -565,6 +565,15 @@ body.is-floating-nav .sidet-chat-view {
   line-height: 1.55;
 }
 
+/* 动作之间由模型自己写出的过渡正文；和最终回答同一套字号，插回发生位置。 */
+.sidet-process-text {
+  max-width: 100%;
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-normal);
+}
+
 .sidet-message-content.is-pending-reply {
   min-height: 16px;
 }
@@ -674,6 +683,10 @@ body.is-floating-nav .sidet-chat-view {
   transform: rotate(90deg);
 }
 
+.sidet-message-meta-panel.is-smooth-closing .sidet-message-meta-panel-icon {
+  transform: rotate(0deg);
+}
+
 .sidet-message-meta-panel-label {
   flex: 0 0 auto;
   font-size: 12.5px;
@@ -698,12 +711,23 @@ body.is-floating-nav .sidet-chat-view {
 .sidet-message-meta-panel-body {
   box-sizing: border-box;
   max-width: 100%;
+  max-height: 320px;
   padding: 0 12px 12px 22px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12.5px;
   line-height: 1.55;
   color: var(--text-faint);
+}
+
+.sidet-message-meta-panel-body.is-smooth-animating,
+.sidet-answer-sources-body.is-smooth-animating {
+  overflow: hidden;
 }
 
 .sidet-message-meta-panel-step + .sidet-message-meta-panel-step {
@@ -790,14 +814,25 @@ body.is-floating-nav .sidet-chat-view {
   transform: rotate(180deg);
 }
 
+.sidet-answer-sources.is-smooth-closing .sidet-answer-sources-chevron {
+  transform: rotate(0deg);
+}
+
 .sidet-answer-sources-chevron svg {
   width: 14px;
   height: 14px;
 }
 
 .sidet-answer-sources-body {
+  box-sizing: border-box;
+  max-height: 320px;
   margin-top: 4px;
   padding: 0 12px 10px 22px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
   color: var(--text-muted);
   font-size: 12.5px;
   line-height: 1.55;
@@ -943,48 +978,6 @@ body.is-floating-nav .sidet-chat-view {
   margin-top: 10px;
 }
 
-.sidet-answer-error-action {
-  min-height: 30px;
-  padding: 5px 11px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  background: var(--background-primary);
-  color: var(--text-normal);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.sidet-answer-error-action:hover {
-  background: var(--background-modifier-hover);
-}
-
-.sidet-answer-error-action.is-primary {
-  border-color: var(--interactive-accent);
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-}
-
-.sidet-answer-error-action.is-primary:hover {
-  background: var(--interactive-accent-hover, var(--interactive-accent));
-}
-
-.sidet-answer-error-action.is-ghost {
-  border-color: transparent;
-  background: transparent;
-  color: var(--text-muted);
-  padding-inline: 5px;
-}
-
-.sidet-answer-error-action.is-ghost:hover {
-  color: var(--text-normal);
-  background: var(--background-modifier-hover);
-}
-
-.sidet-answer-error-action:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
 .sidet-source-modal-meta {
   margin-bottom: 10px;
   color: var(--text-faint);
@@ -1021,10 +1014,6 @@ body.is-floating-nav .sidet-chat-view {
   height: 16px;
 }
 
-.is-phone-layout .sidet-answer-error-action {
-  min-height: 34px;
-}
-
 .sidet-message-content.markdown-rendered > :first-child {
   margin-top: 0;
 }
@@ -1059,89 +1048,330 @@ body.is-floating-nav .sidet-chat-view {
 
 .sidet-agent-inline-action {
   margin-top: 10px;
+}
+
+.sidet-agent-inline-action.is-collapsible .sidet-agent-action-head {
+  cursor: pointer;
+}
+
+.sidet-agent-inline-action [hidden] {
+  display: none !important;
+}
+
+.sidet-agent-action-head {
+  box-sizing: border-box;
   padding: 10px 12px;
-  border: 1px solid var(--background-modifier-border);
   border-radius: 12px;
   background: var(--background-secondary);
 }
 
-.sidet-agent-inline-action.is-executed {
-  border-color: var(--background-modifier-border-hover);
+/* 安卓亮色：宿主 1.15 的 .is-mobile 把 --interactive-normal 压成灰头底色，灰头上的
+   宿主按钮底色就“看不出来”（2026-11-28 安卓 1.15.0 实测）。按 OpenPlug 的平台专用
+   写法：main.ts 以 Platform.isAndroidApp 给 body 挂 `.sidet-android`，只在这个类 +
+   亮色下把这一个按钮底色 token 换回宿主自己在手机弹框里的取值
+   `--background-modifier-hover`（宿主 `.is-phone .modal .modal:not(.mod-lg)` 同款）；
+   不写死颜色、不加描边，iOS / 桌面 / 深色不碰。 */
+body.sidet-android:not(.theme-dark) .sidet-chat-view {
+  --interactive-normal: var(--background-modifier-hover);
 }
 
-.sidet-agent-inline-action-header {
+.sidet-agent-inline-action.is-expanded .sidet-agent-action-head {
+  border-radius: 12px 12px 0 0;
+}
+
+.sidet-agent-action-head-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 6px;
+  flex-wrap: wrap;
+  gap: 5px 8px;
 }
 
-.sidet-agent-inline-action-title {
+.sidet-agent-action-title {
+  flex: 0 0 auto;
   color: var(--text-normal);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
-.sidet-agent-inline-action-status {
-  color: var(--text-muted);
-  font-size: 12px;
+.sidet-agent-action-target {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 6px;
+  min-width: 0;
 }
 
-.sidet-agent-inline-action-path {
-  color: var(--text-accent);
-  font-family: var(--font-monospace);
-  font-size: 12px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.sidet-agent-inline-action-preview-label {
-  margin-top: 8px;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.sidet-agent-inline-action-preview {
+.sidet-agent-inline-action .sidet-agent-action-path {
   display: block;
-  box-sizing: border-box;
-  width: 100%;
-  max-height: min(42vh, 360px);
-  margin: 6px 0 0;
-  padding: 10px 12px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 10px;
-  background: var(--background-primary);
+  min-width: 0;
+  height: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   color: var(--text-normal);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.sidet-agent-inline-action .sidet-agent-action-path:disabled {
+  opacity: 1;
+  cursor: default;
+  pointer-events: none;
+}
+
+.sidet-agent-action-path-folder {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.sidet-agent-action-path-file {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.sidet-agent-inline-action .sidet-agent-action-path:not(:disabled):hover,
+.sidet-agent-inline-action .sidet-agent-action-path:not(:disabled):hover .sidet-agent-action-path-folder,
+.sidet-agent-inline-action .sidet-agent-action-path:not(:disabled):hover .sidet-agent-action-path-file {
+  color: var(--text-accent);
+}
+
+.sidet-agent-inline-action .sidet-agent-action-path:not(:disabled):hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.sidet-agent-action-chip {
+  flex: 0 0 auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.sidet-agent-action-chip.is-warning {
+  background: color-mix(in srgb, var(--color-orange) 14%, transparent);
+  color: var(--color-orange);
+}
+
+.sidet-agent-action-chip.is-success {
+  background: color-mix(in srgb, var(--color-green) 14%, transparent);
+  color: var(--color-green);
+}
+
+.sidet-agent-action-chip.is-danger {
+  background: color-mix(in srgb, var(--color-red) 14%, transparent);
+  color: var(--color-red);
+}
+
+.sidet-agent-action-chevron {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.sidet-agent-action-chevron-icon {
+  display: inline-flex;
+}
+
+.sidet-agent-action-chevron-icon svg {
+  transition: transform 140ms ease;
+}
+
+.sidet-agent-action-chevron[aria-expanded="true"] .sidet-agent-action-chevron-icon svg {
+  transform: rotate(180deg);
+}
+
+.sidet-agent-action-action-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 4px;
+}
+
+.sidet-agent-action-delta {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.sidet-agent-action-delta-add {
+  color: var(--color-green);
+}
+
+.sidet-agent-action-delta-del {
+  color: var(--color-red);
+}
+
+.sidet-agent-action-delta.is-error {
+  color: var(--color-red);
+}
+
+.sidet-agent-action-spacer {
+  flex: 1 1 auto;
+}
+
+.sidet-agent-action-content {
+  display: grid;
+  grid-template-rows: 1fr;
+  box-sizing: border-box;
+  padding: 10px 12px 12px;
+  border-right: 3px solid var(--background-secondary);
+  border-bottom: 3px solid var(--background-secondary);
+  border-left: 3px solid var(--background-secondary);
+  border-radius: 0 0 12px 12px;
+  background: var(--background-primary);
+  transition:
+    grid-template-rows 160ms ease,
+    padding-top 160ms ease,
+    padding-bottom 160ms ease,
+    border-bottom-width 160ms ease;
+}
+
+.sidet-agent-action-content.is-collapsing {
+  grid-template-rows: 0fr;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom-width: 0;
+}
+
+.sidet-agent-action-content-body {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sidet-agent-action-empty {
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.sidet-agent-action-diff {
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   font-family: var(--font-monospace);
   font-size: 12px;
-  line-height: 1.45;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
+  line-height: 1.55;
   -webkit-overflow-scrolling: touch;
 }
 
-.sidet-agent-inline-action-preview code {
-  display: block;
-  padding: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  white-space: inherit;
-}
-
-.sidet-agent-inline-action-note {
-  margin-top: 6px;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.sidet-agent-inline-action-actions {
+.sidet-agent-action-diff-line {
   display: flex;
-  justify-content: flex-end;
-  margin-top: 10px;
+  gap: 8px;
+  padding: 1px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sidet-agent-action-diff-sign {
+  flex: 0 0 10px;
+  width: 10px;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.sidet-agent-action-diff-line.is-add {
+  background: color-mix(in srgb, var(--color-green) 10%, transparent);
+}
+
+.sidet-agent-action-diff-line.is-add .sidet-agent-action-diff-sign {
+  color: var(--color-green);
+}
+
+.sidet-agent-action-diff-line.is-remove {
+  background: color-mix(in srgb, var(--color-red) 10%, transparent);
+}
+
+.sidet-agent-action-diff-line.is-remove .sidet-agent-action-diff-sign {
+  color: var(--color-red);
+}
+
+.sidet-agent-action-diff-line.is-context .sidet-agent-action-diff-text {
+  color: var(--text-normal);
+}
+
+.sidet-agent-action-gap {
+  padding: 2px 0 2px 18px;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.sidet-agent-action-preview {
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.sidet-agent-action-preview h1,
+.sidet-agent-action-preview h2,
+.sidet-agent-action-preview h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.sidet-agent-action-preview p {
+  margin: 0 0 8px;
+  color: var(--text-normal);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.sidet-agent-action-preview ul,
+.sidet-agent-action-preview ol {
+  margin: 0;
+  padding-inline-start: 1.35em;
+}
+
+.sidet-agent-action-preview li {
+  margin: 3px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.is-phone-layout .sidet-agent-action-diff,
+.is-phone-layout .sidet-agent-action-preview {
+  max-height: 220px;
+}
+
+@media (max-width: 520px) {
+  .sidet-agent-action-action-row {
+    align-items: stretch;
+  }
+
+  .sidet-agent-action-delta {
+    flex: 1 1 100%;
+  }
+
+  .sidet-agent-action-spacer {
+    display: none;
+  }
+
+  .sidet-agent-inline-action .sidet-agent-action-primary,
+  .sidet-agent-inline-action .sidet-agent-action-secondary {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .sidet-agent-action-diff,
+  .sidet-agent-action-preview {
+    max-height: 220px;
+  }
 }
 
 .sidet-wiki-plan-followup {
@@ -1373,6 +1603,15 @@ body.is-floating-nav .sidet-chat-view {
   overflow: hidden;
 }
 
+/* 宿主 1.15 的 `.workspace-leaf-content .view-content`（0,2,0）会压过本视图的
+   `padding: 0`，在消息区上方多塞 12px 固定内衬。按宿主内建视图的 `[data-type]`
+   惯例只收回顶部：左右 12px 是窄栏主页标题不贴边的唯一来源，底部 32px 留给
+   状态栏 / 安全区，composer 离底距离也不动。 */
+.workspace-leaf-content[data-type="sidet-chat-view"]
+  .view-content.sidet-chat-view:not(.is-mobile-runtime) {
+  padding-top: 0;
+}
+
 .sidet-chat-view:not(.is-mobile-runtime) .sidet-chat-root {
   position: relative;
   min-height: 0;
@@ -1471,12 +1710,20 @@ body.is-floating-nav .sidet-chat-view {
     box-shadow 120ms ease-out;
 }
 
-.sidet-composer-attachment-chip.is-clickable:hover,
 .sidet-composer-attachment-chip.is-clickable:focus-visible {
   outline: none;
   color: var(--text-normal);
   background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-secondary));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 28%, transparent);
+}
+
+@media (hover: hover) {
+  .sidet-composer-attachment-chip.is-clickable:hover {
+    outline: none;
+    color: var(--text-normal);
+    background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-secondary));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 28%, transparent);
+  }
 }
 
 .sidet-composer-status-chip {
@@ -1748,7 +1995,7 @@ body.is-floating-nav .sidet-chat-view {
   outline: none;
 }
 
-.sidet-scroll-bottom-button:focus-visible {
+.sidet-chat-view button.sidet-scroll-bottom-button:focus-visible {
   box-shadow:
     var(--shadow-s),
     0 0 0 2px color-mix(in srgb, var(--interactive-accent) 24%, transparent);
@@ -1771,6 +2018,57 @@ body.is-floating-nav .sidet-chat-view {
 .sidet-chat-view button.sidet-scroll-bottom-button {
   padding: 0;
   border-radius: 999px;
+}
+
+/* 宿主 button:not(.clickable-icon) 会接管底色与 --input-shadow；这里按设计值显式接管回来。 */
+.sidet-chat-view button.sidet-scroll-bottom-button {
+  background: var(--background-primary);
+  background: color-mix(in srgb, var(--background-primary) 96%, var(--background-secondary) 4%);
+  box-shadow: var(--shadow-s);
+}
+
+/* 安卓亮色：回到底部与灰卡 / 白底贴在一起时，原来的近白填充读不出“有底”
+   （2026-11-28 安卓 1.15.0 实测）。按同一平台专用写法把填充换成宿主手机端的
+   不透明中性 `--interactive-hover`；不写死颜色、不加描边，iOS / 桌面 / 深色不碰。 */
+body.sidet-android:not(.theme-dark) .sidet-chat-view button.sidet-scroll-bottom-button {
+  background: var(--interactive-hover);
+}
+
+/* 旧 WebView 兜底（照 Resojot callout 2026-11-23 的写法）：宿主 1.15 的手机按钮、
+   列表 chip、悬停底全都建立在 color-mix(in oklch, …) 上；旧安卓 WebView 不支持时
+   整层作废，按钮和 chip 一起透明。门内按宿主同一语义在手机端恢复
+   --background-modifier-hover / active-hover 与 --interactive-normal / hover
+   （亮色黑 6.7%，深色白 10%；破坏档 error-rgb 10%）；回到底部另用不透明 border
+   色，避免半透明 scrim 让背后文字透出。新引擎不进门，继续走宿主精确值。 */
+@supports not (background: color-mix(in oklch, red 50%, transparent)) {
+  body.is-mobile.theme-light {
+    --background-modifier-hover: rgba(var(--mono-rgb-100, 0, 0, 0), 0.067);
+    --background-modifier-active-hover: rgba(var(--mono-rgb-100, 0, 0, 0), 0.12);
+    --interactive-normal: var(--background-modifier-hover);
+    --interactive-hover: rgba(var(--mono-rgb-100, 0, 0, 0), 0.12);
+  }
+
+  body.is-mobile.theme-dark {
+    --background-modifier-hover: rgba(255, 255, 255, 0.1);
+    --background-modifier-active-hover: rgba(255, 255, 255, 0.16);
+    --interactive-normal: var(--background-modifier-hover);
+    --interactive-hover: rgba(255, 255, 255, 0.16);
+  }
+
+  body.is-mobile button.mod-destructive:not(.mod-cta) {
+    background-color: rgba(var(--background-modifier-error-rgb, 233, 49, 71), 0.1);
+  }
+
+  body.sidet-android:not(.theme-dark) .sidet-chat-view button.sidet-scroll-bottom-button {
+    background: var(--background-modifier-border);
+  }
+}
+
+@media (hover: hover) {
+  .sidet-chat-view button.sidet-scroll-bottom-button:hover {
+    background: var(--background-modifier-hover);
+    box-shadow: var(--shadow-s);
+  }
 }
 
 .sidet-inline-menu {
@@ -2039,12 +2337,15 @@ body.is-mobile .sidet-inline-menu {
   }
 }
 
-.sidet-rename-modal {
-  width: min(420px, calc(100vw - 32px));
-}
-
-.sidet-archived-conversations-modal {
-  width: min(92vw, 720px);
+/* 弹窗宽度两档（2026-11-27 规范化）：
+   - 常规档＝宿主默认，不写 width（桌面 560、手机 100vw−24）；
+   - 宽版档＝下面这条，多行预览 / 列表 / 长表单才用。
+   选择器必须带 `.modal` 前缀：宿主用双类选择器设宽度，单类名压不过它。
+   `.sidet-composer-modal` 是编辑器特例（独立移动端全宽规则），不并入本组。 */
+.modal.sidet-archived-conversations-modal,
+.modal.sidet-agent-preview-modal,
+.modal.sidet-webpage-preview-modal {
+  width: min(720px, calc(100vw - 24px));
 }
 
 .sidet-archived-conversations-layout {
@@ -2083,30 +2384,10 @@ body.is-mobile .sidet-inline-menu {
   padding-top: 14px;
 }
 
-.sidet-wiki-intake-modal {
-  width: min(560px, calc(100vw - 24px));
-}
-
 .sidet-wiki-intake-header {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.sidet-wiki-intake-eyebrow {
-  color: var(--text-faint);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.sidet-wiki-intake-title {
-  margin: 0;
-  color: var(--text-normal);
-  font-size: 22px;
-  font-weight: 650;
-  line-height: 1.2;
 }
 
 .sidet-wiki-intake-lead {
@@ -2252,21 +2533,6 @@ body.is-mobile .sidet-inline-menu {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 16%, transparent);
 }
 
-.sidet-wiki-intake-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 18px;
-}
-
-.sidet-rename-modal-title {
-  margin: 0 0 14px;
-  color: var(--text-normal);
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
 .sidet-rename-modal-body {
   display: flex;
   flex-direction: column;
@@ -2288,14 +2554,6 @@ body.is-mobile .sidet-inline-menu {
   outline: none;
   border-color: var(--interactive-accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 18%, transparent);
-}
-
-.sidet-rename-modal-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 16px;
 }
 
 .sidet-folder-picker-list {
@@ -2324,6 +2582,22 @@ body.is-mobile .sidet-inline-menu {
 .sidet-folder-picker-item:focus-visible {
   outline: none;
   background: var(--background-modifier-hover);
+}
+
+/* 宿主 button 规则会接管背景、阴影、高度与内容居中；用作用域恢复列表行形态，手机保留宿主触控高度。 */
+.sidet-folder-picker-list > button.sidet-folder-picker-item {
+  height: auto;
+  min-height: var(--input-height);
+  justify-content: flex-start;
+}
+
+.sidet-folder-picker-list > button.sidet-folder-picker-item:not(:hover):not(:focus-visible) {
+  background: transparent;
+  box-shadow: none;
+}
+
+.sidet-folder-picker-list > button.sidet-folder-picker-item:hover:not(:focus-visible) {
+  box-shadow: none;
 }
 
 .sidet-folder-picker-item-icon {
@@ -2356,16 +2630,7 @@ body.is-mobile .sidet-inline-menu {
 }
 
 .sidet-agent-preview-modal {
-  width: min(760px, calc(100vw - 24px));
   max-height: min(88vh, 760px);
-}
-
-.sidet-agent-preview-title {
-  margin: 0;
-  color: var(--text-normal);
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 1.3;
 }
 
 .sidet-agent-preview-source {
@@ -2378,83 +2643,103 @@ body.is-mobile .sidet-inline-menu {
 .sidet-agent-preview-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 16px;
+  gap: 10px;
+  margin-top: 12px;
 }
 
-.sidet-agent-preview-field {
+.sidet-agent-preview-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.sidet-agent-preview-path-slot {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-normal);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.sidet-agent-preview-path-folder {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.sidet-agent-preview-path-file {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.sidet-agent-preview-modal .sidet-agent-preview-manual {
+  flex: 0 0 auto;
+}
+
+.sidet-agent-preview-conflict {
+  color: var(--color-red);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.sidet-agent-preview-conflict[hidden] {
+  display: none;
+}
+
+.sidet-agent-preview-view {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  min-height: 0;
 }
 
-.sidet-agent-preview-label {
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 600;
+.sidet-agent-preview-view .sidet-agent-action-diff,
+.sidet-agent-preview-view .sidet-agent-action-preview {
+  max-height: min(52vh, 420px);
 }
 
-.sidet-agent-preview-path,
-.sidet-agent-preview-content {
+.sidet-agent-preview-empty {
+  padding: 4px 0;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.sidet-agent-preview-path-input {
   width: 100%;
+  height: 34px;
+  padding: 0 10px;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--background-primary);
   color: var(--text-normal);
-  font-size: 14px;
+  font: inherit;
+  font-size: 13px;
 }
 
-.sidet-agent-preview-path {
-  padding: 8px 10px;
-  line-height: 1.4;
-}
-
-.sidet-agent-preview-content {
-  min-height: 300px;
-  padding: 12px;
-  font-family: var(--font-monospace);
-  line-height: 1.55;
-  resize: vertical;
-}
-
-.sidet-agent-preview-path:focus,
+.sidet-agent-preview-path-input:focus,
 .sidet-agent-preview-content:focus {
   outline: none;
   border-color: var(--interactive-accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 16%, transparent);
 }
 
-.sidet-agent-preview-risks {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  border-radius: 10px;
-  background: var(--background-secondary);
-  padding: 10px 12px;
-}
-
-.sidet-agent-preview-risk {
-  color: var(--text-muted);
+.sidet-agent-preview-content {
+  width: 100%;
+  min-height: 300px;
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 9px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
   font-size: 12px;
-  line-height: 1.5;
-}
-
-.sidet-agent-preview-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 16px;
+  line-height: 1.55;
+  resize: vertical;
 }
 
 @media (max-width: 700px) {
-  .sidet-wiki-intake-modal {
-    width: min(100vw - 16px, 100%);
-  }
-
-  .sidet-wiki-intake-title {
-    font-size: 20px;
-  }
-
   .sidet-wiki-intake-source,
   .sidet-wiki-intake-what {
     padding-left: 12px;
@@ -2463,8 +2748,7 @@ body.is-mobile .sidet-inline-menu {
 }
 
 .sidet-webpage-preview-modal {
-  width: min(820px, calc(100vw - 24px));
-  max-height: min(88vh, 780px);
+  max-height: min(88vh, 760px);
 }
 
 .sidet-webpage-preview-body {
@@ -2539,9 +2823,14 @@ body.is-mobile .sidet-inline-menu {
   white-space: nowrap;
 }
 
-.sidet-home-capability-chip:hover,
 .sidet-home-capability-chip:focus-visible {
   color: var(--text-normal);
+}
+
+@media (hover: hover) {
+  .sidet-home-capability-chip:hover {
+    color: var(--text-normal);
+  }
 }
 
 .sidet-home-capability-chip.is-home-capability-selected {
@@ -3114,10 +3403,76 @@ body.is-mobile .sidet-inline-menu {
   line-height: 1.5;
 }
 
-.sidet-model-config-modal {
-  width: min(92vw, 560px);
+/* 弹框公共件（2026-11-27 按 Resojot《弹框标准与核心约束》移植）：
+   底栏容器用宿主 .modal-button-container，按钮用原生 ButtonComponent；插件只补
+   顶距与可选分割线，宽度 / 圆角 / 标题带 / 按钮排布 / 安全区全部归宿主。 */
+.sidet-modal-footer {
+  margin-top: 16px;
 }
 
+.sidet-modal-footer.is-divided {
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 12px;
+}
+
+/* 手机：左右与顶部内衬归零、底距不吃宿主 safe-area 外边距（软键盘弹出时它会变），
+   底距由底栏 12px + 内容 16px 内衬承担，保证聚焦前后弹框一样高。 */
+body.is-phone .sidet-modal-footer {
+  margin-top: 16px;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+body.is-phone .sidet-modal-footer.is-divided {
+  padding-top: 12px;
+}
+
+/* 弹框错误提示只有两组令牌：弹框级一条（底栏上方）与字段级（字段下方）。
+   字号 / 行高 / 颜色只在这里定，新增提示不要另起类名。 */
+.sidet-modal-error {
+  display: none;
+  margin: 8px 0 0;
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+  line-height: 1.45;
+}
+
+.sidet-modal-error.is-visible {
+  display: block;
+}
+
+.sidet-field-error {
+  display: none;
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+}
+
+.sidet-field-error.is-visible {
+  display: block;
+}
+
+/* 软键盘避让锚（2026-11-27 按 Resojot 同机制移植）：TS 只写
+   --sidet-keyboard-inset / --sidet-keyboard-anchor-top，这里把余量消费成绝对定位
+   的 ::after——不参与文档流，只扩大「能滚多远」，不会把卡片顶高。
+   锚的 top 是内容真实底边，不能写死 100%（长表单内容本就溢出）。 */
+.sidet-keyboard-inset {
+  position: relative;
+}
+
+.sidet-keyboard-inset::after {
+  content: "";
+  position: absolute;
+  top: var(--sidet-keyboard-anchor-top, 100%);
+  left: 0;
+  right: 0;
+  height: var(--sidet-keyboard-inset, 0px);
+}
+
+/* 长表单例外（与 Resojot DECISIONS #127 同口径）：保留布局高度上限 + 表单区内滚动
+   + 固定底栏；一屏放得下的短弹框才走「高度归宿主」。宽度归常规档，不写自定义 width。 */
 .sidet-model-config-modal-layout {
   display: flex;
   flex-direction: column;
@@ -3136,23 +3491,37 @@ body.is-mobile .sidet-inline-menu {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding-right: 2px;
+  /* 焦点环内衬：滚动段按自身 padding box 裁切，宿主输入框环 2px、select / 按钮环
+     3px；首行是服务商 select，四边统一留 3px，避免首末行聚焦时被切边。 */
+  padding: 3px;
 }
 
 .sidet-model-config-modal-section--actions {
   flex: 0 0 auto;
-  padding-top: 2px;
 }
 
-.sidet-model-config-actions-setting .setting-item-info {
-  display: none;
+/* layout 的 12px gap 已占掉一部分顶距；补 4px 后与底栏合同的 16px 对齐。 */
+.sidet-model-config-modal-section--actions .sidet-modal-footer {
+  margin-top: 4px;
 }
 
-.sidet-model-config-actions-setting .setting-item-control {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  width: 100%;
+/* 手机端底栏两键并排（取消在左、保存在右），把高度还给表单内容。 */
+body.is-phone .sidet-model-config-modal-section--actions .sidet-modal-footer,
+body.is-mobile .sidet-model-config-modal-section--actions .sidet-modal-footer {
+  flex-direction: row;
+  align-items: center;
+}
+
+body.is-phone .sidet-model-config-modal-section--actions .sidet-modal-footer button,
+body.is-mobile .sidet-model-config-modal-section--actions .sidet-modal-footer button {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+}
+
+body.is-phone .sidet-model-config-modal-section--actions .sidet-modal-footer button.mod-cancel,
+body.is-mobile .sidet-model-config-modal-section--actions .sidet-modal-footer button.mod-cancel {
+  margin-top: 0;
 }
 
 @media (max-width: 700px) {
@@ -3194,15 +3563,6 @@ body.is-mobile .sidet-inline-menu {
 
   .sidet-settings-model-config-meta {
     white-space: normal;
-  }
-
-  .sidet-model-config-actions-setting .setting-item-control {
-    justify-content: stretch;
-  }
-
-  .sidet-model-config-actions-setting .setting-item-control > .mod-cta,
-  .sidet-model-config-actions-setting .setting-item-control > button {
-    flex: 1 1 0;
   }
 }
 
@@ -3480,10 +3840,20 @@ body.is-mobile .sidet-inline-menu {
     > .sidet-composer-wrap,
   .sidet-chat-view.sidet-mobile-composer-layer.is-phone-layout.is-mobile-runtime.is-mobile-keyboard-safe-host.is-mobile-keyboard-host-closing
     > .sidet-composer-wrap {
+    /* 输入框跟键盘同一段节奏：时长由运行时按量到的键盘时长写入，
+       缓动取接近系统键盘的减速曲线，不再用前段过猛的通用 swing。 */
     animation: sidet-mobile-keyboard-host-surface
-      var(--sidet-mobile-keyboard-host-duration, 250ms)
-      var(--anim-motion-swing, cubic-bezier(0.2, 0.8, 0.2, 1))
+      var(--sidet-mobile-keyboard-host-duration, 400ms)
+      cubic-bezier(0.33, 1, 0.68, 1)
       both;
+  }
+
+  /* 开场 / 共帧关闭由 JS 与内容滚动共用一个 rAF 驱动：位移直接写内联
+     transform（配 will-change 走合成层更新），这里只关掉 CSS 动画。 */
+  .sidet-chat-view.sidet-mobile-composer-layer.is-phone-layout.is-mobile-runtime.is-mobile-keyboard-safe-host.is-mobile-keyboard-host-framed
+    > .sidet-composer-wrap {
+    animation: none;
+    will-change: transform;
   }
 
   .sidet-mobile-composer-layer.is-ios-runtime:is(
@@ -3552,6 +3922,11 @@ body.is-mobile .sidet-inline-menu {
 
   .sidet-message-meta-panel-body {
     padding-left: 20px;
+  }
+
+  .sidet-message-meta-panel-body,
+  .sidet-answer-sources-body {
+    max-height: 280px;
   }
 
   .sidet-composer-wrap {

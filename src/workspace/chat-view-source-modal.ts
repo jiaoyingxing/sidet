@@ -1,4 +1,5 @@
-import { Modal, type App } from "obsidian";
+import { ButtonComponent, Modal, type App } from "obsidian";
+import { createSidetModalFooter } from "../shared/modal/sidet-modal-shell";
 import type { MessageSource } from "../types";
 
 export interface AnswerSourceTarget {
@@ -45,32 +46,27 @@ export class ChatViewSourceModal extends Modal {
       });
     }
 
-    const actionsEl = this.contentEl.createDiv({ cls: "modal-button-container" });
+    const footerEl = createSidetModalFooter(this.contentEl);
     if (source.url) {
       const url = source.url;
-      const openButton = actionsEl.createEl("button", {
-        cls: "mod-cta",
-        text: "打开原文"
-      });
-      openButton.type = "button";
-      openButton.addEventListener("click", () => {
-        window.open(url, "_blank", "noopener,noreferrer");
-        this.close();
-      });
+      new ButtonComponent(footerEl)
+        .setButtonText("打开原文")
+        .setCta()
+        .onClick(() => {
+          window.open(url, "_blank", "noopener,noreferrer");
+          this.close();
+        });
 
-      const copyButton = actionsEl.createEl("button", {
-        text: "复制链接"
-      });
-      copyButton.type = "button";
-      copyButton.addEventListener("click", () => {
-        void this.options.copyText(url);
-      });
+      new ButtonComponent(footerEl)
+        .setButtonText("复制链接")
+        .setClass("mod-cancel")
+        .onClick(() => {
+          void this.options.copyText(url);
+        });
     } else {
-      const closeButton = actionsEl.createEl("button", {
-        text: "关闭"
-      });
-      closeButton.type = "button";
-      closeButton.addEventListener("click", () => this.close());
+      new ButtonComponent(footerEl)
+        .setButtonText("关闭")
+        .onClick(() => this.close());
     }
   }
 

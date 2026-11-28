@@ -10,6 +10,7 @@ import {
 } from "obsidian";
 import { DEFAULT_EXPORT_FOLDER } from "../constants";
 import type SidetPlugin from "../main";
+import { createSidetModalFooter } from "../shared/modal/sidet-modal-shell";
 import {
   SETTINGS_ROOT_PAGE,
   SETTINGS_TAB_ICON,
@@ -20,6 +21,7 @@ import { detectSettingsTrack, resolveSettingsRerenderAction } from "./settings-t
 import { bindDeferredSettingInput, disableTextAssistance } from "./setting-input-utils";
 import { HomePinnedCommandsSection } from "./setting-tab-home-section";
 import {
+  configureAutoWebSearchRow,
   configureProviderModelRow,
   renderModelConfigList,
   renderProviderSettingsSection
@@ -86,17 +88,16 @@ class RepairWikiNotesConfirmModal extends Modal {
       text: "此操作会直接修改文件，建议先确认同步或备份已经完成。"
     });
 
-    const actions = new Setting(this.contentEl);
-    actions.setClass("sidet-model-config-actions-setting");
-    actions.infoEl.remove();
+    const actions = createSidetModalFooter(this.contentEl);
 
-    new ButtonComponent(actions.controlEl)
+    new ButtonComponent(actions)
       .setButtonText("取消")
+      .setClass("mod-cancel")
       .onClick(() => {
         this.close();
       });
 
-    const confirmButton = new ButtonComponent(actions.controlEl)
+    const confirmButton = new ButtonComponent(actions)
       .setWarning()
       .setButtonText("检查并修复")
       .onClick(() => {
@@ -123,8 +124,9 @@ export class DialogSettingTab extends PluginSettingTab {
   /** 根级导航行行首图标补挂观察器（1.13+ 声明式；unload 时由 plugin.register 断开）。 */
   private rootRowIconObserver: MutationObserver | null = null;
 
-  /** 「使用须知」页四行单一事实源（从旧「关于」六行原样平移拆出，
-   *  零文案改动；display() 组路径与声明式须知页共用）。 */
+  /** 「使用须知」页四行单一事实源（从旧「关于」六行原样平移拆出；
+   *  display() 组路径与声明式须知页共用）。版权行在 2026-11-27 随 MIT 开源
+   *  改口径：原文「保留所有权利」与 MIT 授权互斥，现为「采用 MIT 许可证」。 */
   private static readonly NOTICE_ROW_DEFS: readonly {
     readonly name: string;
     readonly desc: string;
@@ -144,7 +146,10 @@ export class DialogSettingTab extends PluginSettingTab {
       desc:
         "Sidet 不收集你的 API Key、对话或笔记内容。使用云端模型时，相关内容会发送给你配置的服务商。"
     },
-    { name: "版权", desc: "版权所有 © 焦应行。保留所有权利。" }
+    {
+      name: "版权",
+      desc: "Sidet 采用 MIT 许可证。版权所有 © 2026 焦应行。"
+    }
   ];
 
   constructor(
@@ -225,7 +230,7 @@ export class DialogSettingTab extends PluginSettingTab {
           {
             type: "page",
             name: SETTINGS_ROOT_PAGE.model,
-            desc: "已保存模型项的新增、编辑与默认设置。",
+            desc: "已保存模型项的新增、编辑、默认设置与自动联网开关。",
             items: [
               {
                 name: "模型列表",
@@ -237,6 +242,11 @@ export class DialogSettingTab extends PluginSettingTab {
                     () => this.refreshDeclarativeModelList(),
                   );
                 },
+              },
+              {
+                name: "允许模型自动联网",
+                desc: "需要最新或外部信息时，让模型自己联网搜索。关闭后仍可在对话里手动开启联网搜索。",
+                render: (setting) => configureAutoWebSearchRow(setting, this.plugin),
               },
             ],
           },

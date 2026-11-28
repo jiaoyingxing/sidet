@@ -1,6 +1,12 @@
 import type { WikiKnowledgeMatch } from "../wiki/wiki-memory-index";
 
-export const AGENT_TOOL_NAMES = ["search_notes", "read_note", "note_links", "wiki_memory"] as const;
+export const AGENT_TOOL_NAMES = [
+  "search_notes",
+  "read_note",
+  "note_links",
+  "wiki_memory",
+  "web_research"
+] as const;
 
 export type AgentToolName = typeof AGENT_TOOL_NAMES[number];
 

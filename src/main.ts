@@ -3,6 +3,7 @@ import {
   MarkdownView,
   Notice,
   ObsidianProtocolData,
+  Platform,
   Plugin,
   TFile,
   TFolder,
@@ -42,6 +43,10 @@ import {
   MOBILE_HOME_LIFECYCLE_DIAGNOSTIC_BUILD,
   serializeMobileHomeLifecycleDiagnostics
 } from "./workspace/chat-view-mobile-home-lifecycle-diagnostics";
+import {
+  MOBILE_INPUT_PROBE_BUILD,
+  serializeMobileInputProbe
+} from "./workspace/chat-view-mobile-input-probe";
 
 const SIDET_STAR_OUTLINE_ICON_ID = "sidet-star-outline";
 const SIDET_STAR_FILLED_ICON_ID = "sidet-star-filled";
@@ -49,6 +54,9 @@ const SIDET_IOS_INPUT_DIAGNOSTIC_ACTION =
   "sidet-ios-input-diagnostic";
 const SIDET_STAR_OUTLINE_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></svg>`;
 const SIDET_STAR_FILLED_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><path fill="currentColor" d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></svg>`;
+
+/** Android-only body class for the host 1.15 mobile button-token fix (styles.css). */
+const SIDET_ANDROID_CLASS = "sidet-android";
 
 export default class SidetPlugin extends Plugin {
   override settings: DialogPluginSettings = DEFAULT_SETTINGS;
@@ -99,6 +107,9 @@ export default class SidetPlugin extends Plugin {
   }
 
   override async onload(): Promise<void> {
+    if (Platform.isAndroidApp && typeof document !== "undefined") {
+      document.body.classList.add(SIDET_ANDROID_CLASS);
+    }
     this.registerSidetIcons();
     const rawData: unknown = await this.loadData();
     const data = normalizePluginData(rawData);
@@ -273,6 +284,15 @@ export default class SidetPlugin extends Plugin {
       }
     });
 
+    // 排障命令：不属于 8 条公共产品命令，仅用于移动输入真机取证。
+    this.addCommand({
+      id: "export-mobile-input-diagnostic",
+      name: "导出移动输入诊断（排障）",
+      callback: () => {
+        void this.exportMobileInputDiagnostic();
+      }
+    });
+
     this.addSettingTab(new DialogSettingTab(this.app, this, this.secrets));
 
     this.registerObsidianProtocolHandler(SIDET_OPEN_CHAT_ACTION, this.handleOpenChatUri);
@@ -347,6 +367,9 @@ export default class SidetPlugin extends Plugin {
   }
 
   override onunload(): void {
+    if (typeof document !== "undefined") {
+      document.body.classList.remove(SIDET_ANDROID_CLASS);
+    }
     void this.runUnloadTasks().catch((error) => {
       console.error("Sidet：卸载时清理失败", error);
     });
@@ -400,13 +423,58 @@ export default class SidetPlugin extends Plugin {
       "",
       serializeMobileHomeLifecycleDiagnostics()
     ].join("\n");
+    await this.copyDiagnosticText(
+      report,
+      `已复制 iPhone 输入诊断（${MOBILE_HOME_LIFECYCLE_DIAGNOSTIC_BUILD} / ${IOS_KEYBOARD_PHASE_DIAGNOSTIC_BUILD}）。`,
+      "复制 iPhone 键盘相位诊断失败。"
+    );
+  }
+
+  private async exportMobileInputDiagnostic(): Promise<void> {
+    const traceHost = window as typeof window & {
+      __SIDET_SCROLL_TRACE__?: Array<Record<string, unknown>>;
+    };
+    const trace = Array.isArray(traceHost.__SIDET_SCROLL_TRACE__)
+      ? traceHost.__SIDET_SCROLL_TRACE__.slice(-40)
+      : [];
+    // 排障命令必须带主页输入生命周期（点按 → 换层 → focus → blur 及新焦点
+    // 持有者）；只导出探针样本无法区分「宿主提前聚焦」与「换层后丢焦点」。
+    const report = [
+      serializeMobileInputProbe({ final: null, scrollTrace: trace }),
+      "",
+      serializeMobileHomeLifecycleDiagnostics()
+    ].join("\n");
+    // 手机剪贴板会把长文本截断（安卓实测 5000 字符），排障报告直接落库文件；
+    // 写入失败才回退剪贴板（桌面环境）。
+    const now = new Date();
+    const pad = (value: number): string => String(value).padStart(2, "0");
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    try {
+      const file = await this.app.vault.create(
+        `Sidet 移动输入诊断 ${stamp}.json`,
+        report
+      );
+      new Notice(`已生成移动输入诊断：${file.path}`, 6000);
+      return;
+    } catch (error) {
+      console.warn("Sidet：写入移动输入诊断文件失败，回退到剪贴板。", error);
+    }
+    await this.copyDiagnosticText(
+      report,
+      `已复制移动输入诊断（${MOBILE_INPUT_PROBE_BUILD}）。`,
+      "复制移动输入诊断失败。"
+    );
+  }
+
+  private async copyDiagnosticText(
+    report: string,
+    successNotice: string,
+    failureNotice: string
+  ): Promise<void> {
     try {
       if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(report);
-        new Notice(
-          `已复制 iPhone 输入诊断（${MOBILE_HOME_LIFECYCLE_DIAGNOSTIC_BUILD} / ${IOS_KEYBOARD_PHASE_DIAGNOSTIC_BUILD}）。`,
-          3200
-        );
+        new Notice(successNotice, 3200);
         return;
       }
     } catch (error) {
@@ -432,13 +500,10 @@ export default class SidetPlugin extends Plugin {
     }
 
     if (!copied) {
-      new Notice("复制 iPhone 键盘相位诊断失败。", 3200);
+      new Notice(failureNotice, 3200);
       return;
     }
-    new Notice(
-      `已复制 iPhone 输入诊断（${MOBILE_HOME_LIFECYCLE_DIAGNOSTIC_BUILD} / ${IOS_KEYBOARD_PHASE_DIAGNOSTIC_BUILD}）。`,
-      3200
-    );
+    new Notice(successNotice, 3200);
   }
 
   private async persistPluginData(): Promise<void> {

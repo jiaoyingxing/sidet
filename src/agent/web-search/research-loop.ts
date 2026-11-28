@@ -59,7 +59,11 @@ export interface WebResearchLoopResult {
   state: ResearchLoopState;
 }
 
-function createInitialState(initialQuestion: string): ResearchLoopState {
+/**
+ * 一轮检索会话的初始状态。显式联网模式与自动联网工具共用同一形态，
+ * 保证来源编号、已读 URL 去重和查询累积走同一份状态模型。
+ */
+export function createResearchLoopState(initialQuestion: string): ResearchLoopState {
   return {
     pages: [],
     lastSearchResults: [],
@@ -100,7 +104,7 @@ export async function runWebResearchLoop(
   options: WebResearchLoopOptions
 ): Promise<WebResearchLoopResult> {
   const budget = createResearchBudget(options.budgets, options.now);
-  const state = createInitialState(options.initialQuestion);
+  const state = createResearchLoopState(options.initialQuestion);
   const transcript: MessageRecord[] = [
     options.createMessage("system", options.decisionContext),
     ...options.baseMessages

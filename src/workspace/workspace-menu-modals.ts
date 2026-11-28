@@ -1,7 +1,17 @@
-import { Modal, setIcon } from "obsidian";
+import { ButtonComponent, Modal, setIcon } from "obsidian";
 import { UNTITLED_CONVERSATION_TITLE } from "../constants";
+import {
+  createSidetModalError,
+  createSidetModalFooter,
+  type SidetModalErrorHandle
+} from "../shared/modal/sidet-modal-shell";
 import type { ConversationFolderSummary, ConversationSummary } from "../types";
 import type { WorkspaceController } from "./workspace-controller";
+
+function formatModalActionError(prefix: string, error: unknown): string {
+  const detail = error instanceof Error ? error.message.trim() : "";
+  return detail ? `${prefix}${detail}` : `${prefix}请稍后重试。`;
+}
 
 export function openCreateFolderModal(controller: WorkspaceController): void {
   window.setTimeout(() => {
@@ -50,6 +60,8 @@ export function openMoveConversationModal(
 class RenameConversationModal extends Modal {
   private inputEl: HTMLInputElement | null = null;
   private saveButtonEl: HTMLButtonElement | null = null;
+  private errorHandle: SidetModalErrorHandle | null = null;
+  private submitting = false;
 
   constructor(
     private readonly controller: WorkspaceController,
@@ -59,14 +71,9 @@ class RenameConversationModal extends Modal {
   }
 
   override onOpen(): void {
-    this.containerEl.addClass("sidet-rename-modal-container");
     this.modalEl.addClass("sidet-rename-modal");
+    this.titleEl.setText("重命名对话");
     this.contentEl.empty();
-
-    this.contentEl.createEl("h2", {
-      cls: "sidet-rename-modal-title",
-      text: "重命名对话"
-    });
 
     const bodyEl = this.contentEl.createDiv({ cls: "sidet-rename-modal-body" });
     this.inputEl = bodyEl.createEl("input", {
@@ -76,26 +83,26 @@ class RenameConversationModal extends Modal {
     this.inputEl.value = this.summary.title || UNTITLED_CONVERSATION_TITLE;
     this.inputEl.setAttr("aria-label", "新的对话标题");
 
-    const actionsEl = this.contentEl.createDiv({ cls: "sidet-rename-modal-actions" });
-    const cancelButtonEl = actionsEl.createEl("button", {
-      cls: "mod-muted",
-      text: "取消"
-    });
-    cancelButtonEl.type = "button";
-    cancelButtonEl.addEventListener("click", () => {
-      this.close();
-    });
+    const errorHandle = createSidetModalError(this.contentEl);
+    this.errorHandle = errorHandle;
+    const actionsEl = createSidetModalFooter(this.contentEl);
+    new ButtonComponent(actionsEl)
+      .setButtonText("取消")
+      .setClass("mod-cancel")
+      .onClick(() => {
+        this.close();
+      });
 
-    this.saveButtonEl = actionsEl.createEl("button", {
-      cls: "mod-cta",
-      text: "保存"
-    });
-    this.saveButtonEl.type = "button";
-    this.saveButtonEl.addEventListener("click", () => {
-      void this.submit();
-    });
+    this.saveButtonEl = new ButtonComponent(actionsEl)
+      .setButtonText("保存")
+      .setCta()
+      .onClick(() => {
+        void this.submit();
+      })
+      .buttonEl;
 
     this.inputEl.addEventListener("input", () => {
+      this.errorHandle?.clear();
       this.syncSaveButton();
     });
     this.inputEl.addEventListener("keydown", (event) => {
@@ -125,17 +132,19 @@ class RenameConversationModal extends Modal {
     this.contentEl.empty();
     this.inputEl = null;
     this.saveButtonEl = null;
+    this.errorHandle = null;
+    this.submitting = false;
   }
 
   private syncSaveButton(): void {
     if (!this.inputEl || !this.saveButtonEl) {
       return;
     }
-    this.saveButtonEl.disabled = this.inputEl.value.trim().length === 0;
+    this.saveButtonEl.disabled = this.submitting || this.inputEl.value.trim().length === 0;
   }
 
   private async submit(): Promise<void> {
-    if (!this.inputEl) {
+    if (!this.inputEl || this.submitting) {
       return;
     }
     const nextTitle = this.inputEl.value.trim();
@@ -148,8 +157,18 @@ class RenameConversationModal extends Modal {
       this.close();
       return;
     }
-    await this.controller.renameConversation(this.summary.id, nextTitle);
-    this.close();
+    this.errorHandle?.clear();
+    this.submitting = true;
+    this.syncSaveButton();
+    try {
+      await this.controller.renameConversation(this.summary.id, nextTitle);
+      this.close();
+    } catch (error) {
+      this.errorHandle?.show(formatModalActionError("重命名失败：", error));
+    } finally {
+      this.submitting = false;
+      this.syncSaveButton();
+    }
   }
 }
 
@@ -164,6 +183,8 @@ interface FolderNameModalOptions {
 class FolderNameModal extends Modal {
   private inputEl: HTMLInputElement | null = null;
   private saveButtonEl: HTMLButtonElement | null = null;
+  private errorHandle: SidetModalErrorHandle | null = null;
+  private submitting = false;
 
   constructor(
     controller: WorkspaceController,
@@ -173,14 +194,9 @@ class FolderNameModal extends Modal {
   }
 
   override onOpen(): void {
-    this.containerEl.addClass("sidet-rename-modal-container");
     this.modalEl.addClass("sidet-rename-modal");
+    this.titleEl.setText(this.options.title);
     this.contentEl.empty();
-
-    this.contentEl.createEl("h2", {
-      cls: "sidet-rename-modal-title",
-      text: this.options.title
-    });
 
     const bodyEl = this.contentEl.createDiv({ cls: "sidet-rename-modal-body" });
     this.inputEl = bodyEl.createEl("input", {
@@ -190,26 +206,26 @@ class FolderNameModal extends Modal {
     this.inputEl.value = this.options.initialValue ?? "";
     this.inputEl.setAttr("aria-label", this.options.inputLabel);
 
-    const actionsEl = this.contentEl.createDiv({ cls: "sidet-rename-modal-actions" });
-    const cancelButtonEl = actionsEl.createEl("button", {
-      cls: "mod-muted",
-      text: "取消"
-    });
-    cancelButtonEl.type = "button";
-    cancelButtonEl.addEventListener("click", () => {
-      this.close();
-    });
+    const errorHandle = createSidetModalError(this.contentEl);
+    this.errorHandle = errorHandle;
+    const actionsEl = createSidetModalFooter(this.contentEl);
+    new ButtonComponent(actionsEl)
+      .setButtonText("取消")
+      .setClass("mod-cancel")
+      .onClick(() => {
+        this.close();
+      });
 
-    this.saveButtonEl = actionsEl.createEl("button", {
-      cls: "mod-cta",
-      text: this.options.submitLabel
-    });
-    this.saveButtonEl.type = "button";
-    this.saveButtonEl.addEventListener("click", () => {
-      void this.submit();
-    });
+    this.saveButtonEl = new ButtonComponent(actionsEl)
+      .setButtonText(this.options.submitLabel)
+      .setCta()
+      .onClick(() => {
+        void this.submit();
+      })
+      .buttonEl;
 
     this.inputEl.addEventListener("input", () => {
+      this.errorHandle?.clear();
       this.syncSaveButton();
     });
     this.inputEl.addEventListener("keydown", (event) => {
@@ -239,17 +255,19 @@ class FolderNameModal extends Modal {
     this.contentEl.empty();
     this.inputEl = null;
     this.saveButtonEl = null;
+    this.errorHandle = null;
+    this.submitting = false;
   }
 
   private syncSaveButton(): void {
     if (!this.inputEl || !this.saveButtonEl) {
       return;
     }
-    this.saveButtonEl.disabled = this.inputEl.value.trim().length === 0;
+    this.saveButtonEl.disabled = this.submitting || this.inputEl.value.trim().length === 0;
   }
 
   private async submit(): Promise<void> {
-    if (!this.inputEl) {
+    if (!this.inputEl || this.submitting) {
       return;
     }
     const nextName = this.inputEl.value.trim();
@@ -261,12 +279,25 @@ class FolderNameModal extends Modal {
       this.close();
       return;
     }
-    await this.options.onSubmit(nextName);
-    this.close();
+    this.errorHandle?.clear();
+    this.submitting = true;
+    this.syncSaveButton();
+    try {
+      await this.options.onSubmit(nextName);
+      this.close();
+    } catch (error) {
+      this.errorHandle?.show(formatModalActionError("保存失败：", error));
+    } finally {
+      this.submitting = false;
+      this.syncSaveButton();
+    }
   }
 }
 
 class MoveConversationModal extends Modal {
+  private errorHandle: SidetModalErrorHandle | null = null;
+  private submitting = false;
+
   constructor(
     private readonly controller: WorkspaceController,
     private readonly summary: ConversationSummary
@@ -275,15 +306,12 @@ class MoveConversationModal extends Modal {
   }
 
   override onOpen(): void {
-    this.containerEl.addClass("sidet-rename-modal-container");
     this.modalEl.addClass("sidet-rename-modal");
+    this.titleEl.setText("移动到文件夹");
     this.contentEl.empty();
 
-    this.contentEl.createEl("h2", {
-      cls: "sidet-rename-modal-title",
-      text: "移动到文件夹"
-    });
-
+    const errorHandle = createSidetModalError(this.contentEl);
+    this.errorHandle = errorHandle;
     const folders = this.controller.store
       .getFolderSummaries()
       .filter((folder) => folder.id !== this.summary.folderId);
@@ -307,13 +335,30 @@ class MoveConversationModal extends Modal {
       setIcon(iconEl, "folder");
       buttonEl.createSpan({ cls: "sidet-folder-picker-item-label", text: folder.name });
       buttonEl.addEventListener("click", () => {
-        void this.controller.moveConversationToFolder(this.summary.id, folder.id);
-        this.close();
+        void this.moveToFolder(folder.id);
       });
     }
   }
 
   override onClose(): void {
     this.contentEl.empty();
+    this.errorHandle = null;
+    this.submitting = false;
+  }
+
+  private async moveToFolder(folderId: string): Promise<void> {
+    if (this.submitting) {
+      return;
+    }
+    this.errorHandle?.clear();
+    this.submitting = true;
+    try {
+      await this.controller.moveConversationToFolder(this.summary.id, folderId);
+      this.close();
+    } catch (error) {
+      this.errorHandle?.show(formatModalActionError("移动失败：", error));
+    } finally {
+      this.submitting = false;
+    }
   }
 }

@@ -55,7 +55,7 @@ export function buildAgentRouterContextBundle(input: AgentRouterContextBundleInp
       "使用要求：",
       "- 先判断上下文是否与用户问题相关；不相关就忽略。",
       "- 回答涉及库内事实时，优先引用已给出的路径或双链。",
-      "- 任何写文件、新建文件或修改文件的建议，都必须走 Sidet 的预览确认链。",
+      "- 写文件、新建文件或修改文件的建议直接输出 sidet-action 进入预览确认链；卡片本身是确认入口，不要先在聊天里追问用户是否确认。",
       "- 不要声称读取了未提供全文的文件。",
       `- 选择“${ALL_KNOWLEDGE_BASES_DISPLAY_NAME}”时，也只在已识别知识库范围内做轻路由。`
     ],

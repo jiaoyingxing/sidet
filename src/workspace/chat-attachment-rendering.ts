@@ -1,5 +1,6 @@
 import { setIcon } from "obsidian";
 import type { MessageAttachment, MessageRecord, WebpageMessageAttachment } from "../types";
+import { shouldPreserveFocusedTextEntry } from "./press-focus";
 
 interface RenderMessageAttachmentsOptions {
   onOpenWebpageAttachment?: (attachment: WebpageMessageAttachment) => void;
@@ -26,6 +27,7 @@ export interface ComposerChipRenderOptions {
   className?: string;
   tone?: "default" | "status";
   clickable?: boolean;
+  preserveFocus?: boolean;
   ariaLabel?: string;
   onClick?: (anchorEl: HTMLElement) => void;
   remove?: {
@@ -50,6 +52,18 @@ export function renderComposerChip(
     chipEl.setAttribute("role", "button");
     chipEl.setAttribute("tabindex", "0");
     chipEl.setAttribute("aria-label", options.ariaLabel ?? options.label);
+    if (options.preserveFocus) {
+      // 和工具栏图标按钮同一套：输入框有焦点时，点 chip 不让焦点先跳到
+      // chip 上。否则移动端会在取消后把焦点留在 chip，出现“还亮着”的
+      // focus 态。
+      const preserveFocusForPress = (event: Event) => {
+        if (shouldPreserveFocusedTextEntry(event)) {
+          event.preventDefault();
+        }
+      };
+      chipEl.addEventListener("pointerdown", preserveFocusForPress);
+      chipEl.addEventListener("mousedown", preserveFocusForPress);
+    }
     chipEl.addEventListener("click", () => {
       options.onClick?.(chipEl);
     });
@@ -72,7 +86,7 @@ export function renderComposerChip(
 
   if (options.remove) {
     const removeButtonEl = chipEl.createEl("button", {
-      cls: "sidet-composer-attachment-remove"
+      cls: "clickable-icon sidet-composer-attachment-remove"
     });
     removeButtonEl.type = "button";
     removeButtonEl.setAttribute("aria-label", options.remove.label);

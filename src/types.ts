@@ -75,6 +75,10 @@ export interface MessageMetaPanel {
   display?: MessageMetaPanelDisplay;
   group?: string;
   groupLabel?: string;
+  /** 面板创建时的推理文本长度；新消息用来把推理按事件切段。旧消息没有。 */
+  reasoningBefore?: number;
+  /** 面板创建时的正文长度；新消息用来把正文段插回动作之间。旧消息没有。 */
+  textBefore?: number;
 }
 
 /**
@@ -93,12 +97,22 @@ export interface MessageAnswerVariant {
   createdAt: number;
 }
 
+export interface MessageAgentActionState {
+  /** 提案签名；跨重启匹配同一条写入动作，避免重复执行。 */
+  signature: string;
+  /** 实际写入路径；用户可能在调整弹窗里改过目标。 */
+  targetPath: string;
+  executedAt: number;
+}
+
 export interface MessageRecord {
   id: string;
   role: MessageRole;
   text: string;
   reasoningText?: string;
   reasoningLabel?: string;
+  /** 1 = 生成时记录了动作边界，按「推理 / 动作 / 正文」事件流渲染；旧消息没有。 */
+  processStreamVersion?: number;
   createdAt: number;
   status: MessageStatus;
   /** 失败原因；有部分正文时正文保留，原因单独展示。 */
@@ -107,6 +121,8 @@ export interface MessageRecord {
   knowledgeBaseRouting?: MessageKnowledgeBaseRoutingInfo;
   metaPanels?: MessageMetaPanel[];
   sources?: MessageSource[];
+  /** 已成功写入的提案记录；失败或待确认不落库。 */
+  agentAction?: MessageAgentActionState;
   /** 其余回答版本；当前版本仍在主字段，不重复存放。 */
   answerVariants?: MessageAnswerVariant[];
   /** 当前版本在全部版本中的 0 基下标。 */
@@ -191,7 +207,6 @@ export interface ModelPreset {
   providerId: ModelProviderId;
   model: string;
   baseUrl: string;
-  supportsImageInput?: boolean;
   /** 预设模型的上下文窗口（tokens）；用于请求历史装填预算。 */
   contextWindowTokens: number;
 }

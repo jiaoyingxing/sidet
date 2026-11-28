@@ -1,6 +1,4 @@
 import { Component, type WorkspaceLeaf } from "obsidian";
-import { stripSidetToolActionBlock } from "../agent/actions/agent-tool-protocol";
-import { stripSidetProtocolBlocks } from "../agent/web-search/sidet-protocol";
 import type {
   ConversationRecord,
   MessageRecord,
@@ -8,6 +6,7 @@ import type {
 } from "../types";
 import { findAssistantMessageContent } from "./assistant-message-dom";
 import { renderMessageAttachments } from "./chat-attachment-rendering";
+import { getAssistantDisplayText } from "./assistant-process-events";
 import { computeMessageRevealScrollTop } from "./chat-view-layout-metrics";
 import { shouldDeferMessageMarkdown } from "./chat-view-render-policy";
 import {
@@ -431,6 +430,10 @@ export class ChatViewConversationRuntime {
     conversationId: string,
     renderGeneration: number
   ): void {
+    // 同会话整页重绘会再次进入这里；旧 observer 不 disconnect 会继续观察
+    // 已移除 / 仍在的节点，每次重绘泄漏一个。
+    this.deferredMarkdownObserver?.disconnect();
+    this.deferredMarkdownObserver = null;
     if (this.deferredMarkdownItems.size === 0 || typeof IntersectionObserver === "undefined") {
       return;
     }
@@ -533,7 +536,7 @@ export class ChatViewConversationRuntime {
     const hostRect = hostEl.getBoundingClientRect();
     const itemRect = itemEl.getBoundingClientRect();
     const wasAboveViewport = itemRect.bottom < hostRect.top;
-    const displayText = stripSidetToolActionBlock(stripSidetProtocolBlocks(message.text));
+    const displayText = getAssistantDisplayText(message);
     const hydrateStartedAt = nowMs();
 
     const renderComponent = this.createMessageRenderComponent(itemEl);
@@ -1012,7 +1015,7 @@ export class ChatViewConversationRuntime {
       : messageSurface;
     const content = contentSurface.createDiv({ cls: "sidet-message-content" });
     const displayText = message.role === "assistant"
-      ? stripSidetToolActionBlock(stripSidetProtocolBlocks(message.text))
+      ? getAssistantDisplayText(message)
       : message.text;
     this.options.renderAssistantMetaBlocks(messageSurface, content, message);
     let markdownRenderPromise: Promise<void> | null = null;

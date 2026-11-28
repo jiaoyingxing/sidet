@@ -26,12 +26,24 @@ export interface ChatHomeRenderResult {
   capabilityEls: Map<ChatHomeCapabilityId, HTMLDivElement>;
 }
 
+export const CHAT_HOME_CAPABILITY_LABELS: Record<ChatHomeCapabilityId, string> = {
+  "knowledge-base": "知识库",
+  "web-clipping": "网页剪藏",
+  "web-search": "联网搜索",
+  "wiki-card": "Wiki卡片"
+};
+
 export function setChatHomeCapabilitySelected(
   chipEl: HTMLDivElement,
-  selected: boolean
+  selected: boolean,
+  label?: string
 ): void {
   chipEl.classList.toggle("is-home-capability-selected", selected);
   chipEl.setAttribute("aria-pressed", selected ? "true" : "false");
+  if (label) {
+    // 能力 chip 是开关：选中态下再点是取消，读屏名称要跟着动作走。
+    chipEl.setAttribute("aria-label", selected ? `取消${label}` : `选择${label}`);
+  }
 }
 
 export function renderChatHome(
@@ -53,11 +65,12 @@ export function renderChatHome(
       icon: capability.icon,
       className: "sidet-home-capability-chip",
       clickable: true,
+      preserveFocus: true,
       ariaLabel: `选择${capability.label}`,
       onClick: capability.onSelect
     });
     chipEl.setAttr("data-sidet-home-capability", capability.id);
-    setChatHomeCapabilitySelected(chipEl, capability.selected);
+    setChatHomeCapabilitySelected(chipEl, capability.selected, capability.label);
     capabilityEls.set(capability.id, chipEl);
   }
 

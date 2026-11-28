@@ -8,6 +8,7 @@ import {
 import { createDisplayableAnswerStreamer } from "../web-search/displayable-answer-stream";
 import {
   buildAgentToolResultBlock,
+  isAgentToolInvocationBlockComplete,
   isAgentToolInvocationMalformed,
   parseAgentToolInvocation
 } from "./tool-protocol";
@@ -23,7 +24,7 @@ export const AGENT_TOOL_LOOP_FALLBACK_TEXT = "当前没有得到可显示的回�
 
 const REPAIR_EMPTY_ASSISTANT_TEXT = "（上一条没有按工具协议返回）";
 const DUPLICATE_TOOL_RESULT_TEXT = "本次工具调用与之前的调用重复，已跳过。请基于已有结果直接回答，不要再调用工具。";
-const MAX_TOOL_STEP_DETAIL_CHARS = 160;
+const MAX_TOOL_STEP_DETAIL_CHARS = 4000;
 
 export interface AgentToolStep {
   tool: AgentToolName;
@@ -97,8 +98,10 @@ type ToolRoundOutcome = "executed" | "duplicate" | "budget" | "aborted";
  */
 export async function runAgentToolLoop(options: AgentToolLoopOptions): Promise<AgentToolLoopResult> {
   const maxRounds = resolveMaxRounds(options.maxRounds);
+  const toolDefinitions = options.toolDefinitions ?? AGENT_TOOL_DEFINITIONS;
+  const webResearchEnabled = toolDefinitions.web_research !== undefined;
   const transcript: MessageRecord[] = [
-    options.createMessage("system", buildAgentToolSystemContext()),
+    options.createMessage("system", buildAgentToolSystemContext({ webResearch: webResearchEnabled })),
     ...options.baseMessages
   ];
   const executedInvocations = new Set<string>();
@@ -214,7 +217,7 @@ export async function runAgentToolLoop(options: AgentToolLoopOptions): Promise<A
 
     options.onToolStep({ tool: invocation.tool, status: "running", summary });
 
-    const definition = resolveToolDefinition(options.toolDefinitions, invocation.tool);
+    const definition = resolveToolDefinition(toolDefinitions, invocation.tool);
     let result: AgentToolExecutionResult;
     if (definition) {
       result = await executeToolWithTimeout(invocation, definition, options.executeTool);
@@ -306,7 +309,7 @@ export async function runAgentToolLoop(options: AgentToolLoopOptions): Promise<A
     }
 
     const repairedInvocation = await invokeModel([
-      options.createMessage("system", buildAgentToolRepairContext()),
+      options.createMessage("system", buildAgentToolRepairContext({ webResearch: webResearchEnabled })),
       ...transcript
     ]);
     if (repairedInvocation.aborted) {
@@ -354,10 +357,9 @@ function resolveToolResultBudget(rawBudget: number | undefined): number {
 }
 
 function resolveToolDefinition(
-  customDefinitions: Partial<Record<AgentToolName, AgentToolDefinition>> | undefined,
+  definitions: Partial<Record<AgentToolName, AgentToolDefinition>>,
   name: AgentToolName
 ): AgentToolDefinition | null {
-  const definitions = customDefinitions ?? AGENT_TOOL_DEFINITIONS;
   return definitions[name] ?? null;
 }
 
@@ -407,8 +409,11 @@ async function executeToolWithTimeout(
 }
 
 function shouldStopOnToolBlock(contentText: string): boolean {
+  // 只有完整块才提前停止；出现 opener 就停会把未写完的工具块截断，
+  // 反而让完整块永远解析不到。
   return parseAgentToolInvocation(contentText) !== null
-    || isAgentToolInvocationMalformed(contentText);
+    || (isAgentToolInvocationBlockComplete(contentText)
+      && isAgentToolInvocationMalformed(contentText));
 }
 
 function buildInvocationKey(invocation: AgentToolInvocation): string {
@@ -427,7 +432,9 @@ function normalizeKeyPart(value: string | null): string | null {
 }
 
 function buildToolStepSummary(invocation: AgentToolInvocation): string {
-  const usesQuery = invocation.tool === "search_notes" || invocation.tool === "wiki_memory";
+  const usesQuery = invocation.tool === "search_notes"
+    || invocation.tool === "wiki_memory"
+    || invocation.tool === "web_research";
   const target = (usesQuery ? invocation.query : invocation.path)?.trim() ?? "";
   switch (invocation.tool) {
     case "search_notes":
@@ -438,20 +445,20 @@ function buildToolStepSummary(invocation: AgentToolInvocation): string {
       return `查询双链：${target}`;
     case "wiki_memory":
       return `查询 Wiki 记忆：${target}`;
+    case "web_research":
+      return `联网搜索：${target}`;
   }
 }
 
 function extractToolStepDetail(content: string): string | null {
-  const firstLine = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.length > 0);
-  if (!firstLine) {
+  // 面板里要能回看工具结果，不再只留第一行；单次结果本身已有 4k 预算。
+  const normalized = content.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
     return null;
   }
-  return firstLine.length <= MAX_TOOL_STEP_DETAIL_CHARS
-    ? firstLine
-    : `${firstLine.slice(0, MAX_TOOL_STEP_DETAIL_CHARS - 3).trimEnd()}...`;
+  return normalized.length <= MAX_TOOL_STEP_DETAIL_CHARS
+    ? normalized
+    : `${normalized.slice(0, MAX_TOOL_STEP_DETAIL_CHARS - 3).trimEnd()}...`;
 }
 
 function describeError(error: unknown): string {

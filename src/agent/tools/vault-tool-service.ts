@@ -57,6 +57,7 @@ type LinkResolver = (linkpath: string, sourcePath: string) => TFile | null;
  *
  * 只依赖注入的 `App` 与 wiki 查询函数，不读写工作区状态、不发网络请求、
  * 不接入 ChatView / WorkspaceController / ConversationSession。
+ * `web_research` 由对话运行时的组合执行器承接；这里命中只说明发生了误路由。
  */
 export class VaultToolService {
   constructor(private readonly options: VaultToolServiceOptions) {}
@@ -71,6 +72,8 @@ export class VaultToolService {
         return this.runNoteLinks(invocation);
       case "wiki_memory":
         return this.runWikiMemory(invocation);
+      case "web_research":
+        return this.result("web_research", "error", "联网工具需要在对话运行时执行。");
       default: {
         const unreachable: never = invocation.tool;
         throw new Error(`未知工具：${String(unreachable)}`);

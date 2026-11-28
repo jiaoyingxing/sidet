@@ -46,6 +46,12 @@ function assertDisplayableTextHidesProtocol(module) {
     "这是正文。\n\n补一句。",
     "protocol blocks inside the reply should be stripped while keeping surrounding visible text"
   );
+
+  assert.equal(
+    module.computeDisplayableAnswerText("示例：\n```js\nconst a = 1;\n```"),
+    "示例：\n```js\nconst a = 1;\n```",
+    "a completed code block at the end must keep its closing fence"
+  );
 }
 
 function assertProtocolPreambleDetection(module) {
