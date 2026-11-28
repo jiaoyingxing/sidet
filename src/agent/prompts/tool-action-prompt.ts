@@ -1,16 +1,14 @@
 import {
   DEFAULT_AGENT_DRAFT_FOLDER,
-  DEFAULT_AGENT_MEMORY_FOLDER,
-  DEFAULT_AGENT_SKILL_FOLDER,
-  DEFAULT_AGENT_WIKI_FOLDER,
   DEFAULT_WEB_CLIPPING_FOLDER
 } from "../../constants";
-import { buildWikiSchemaGuidance } from "../wiki/wiki-note-schema";
 
 export function buildSidetFileToolSummaryContext(): string {
   return [
     "Sidet 文件动作能力：",
-    "- 对方明确要求保存成笔记、写入知识库、追加到现有笔记或更新现有笔记时，直接输出一条 sidet-action；不要先问是否保存、是否确认或需不需要你创建。",
+    "- 对方明确要求保存成笔记、追加到现有笔记或更新现有笔记时，直接输出一条 sidet-action；不要先问是否保存、是否确认或需不需要你创建。",
+    "- 格式固定：```sidet-action（外层三个反引号）→ tool / targetPath / title / reason 四个字段 → 独立一行 --- → 完整 Markdown 正文 → ```。不要用 YAML / JSON，也不要用 action / path / content 这类字段名。",
+    "- tool 只能是 create_note / append_note / replace_note：新建用 create_note，整体更新用 replace_note，末尾追加用 append_note。",
     "- sidet-action 不会立即写入；卡片本身会展示预览并等待用户确认，这是唯一的确认步骤。",
     "- 正文只写 1-3 句说明，不要重复笔记全文；卡片会展示完整内容。",
     "- sidet-action 放在回复最后；块后不要再问是否创建、是否保存或是否需要修改。",
@@ -25,7 +23,7 @@ export function buildSidetFileToolSummaryContext(): string {
 export function buildSidetFileToolContext(): string {
   return [
     "Sidet 文件动作协议：",
-    "- 硬规则：用户明确要求保存、写入、整理成笔记、整理到知识库、创建 Skill 或更新已有笔记时，直接输出 sidet-action；卡片本身就是确认入口。sidet-action 块必须是回复的最后内容：块前最多 1-3 句说明，块后不得再输出任何文字，尤其不要问“是否确认/是否创建/是否需要调整”。",
+    "- 硬规则：用户明确要求保存、写入、整理成笔记或更新已有笔记时，直接输出 sidet-action；卡片本身就是确认入口。sidet-action 块必须是回复的最后内容：块前最多 1-3 句说明，块后不得再输出任何文字，尤其不要问“是否确认/是否创建/是否需要调整”。",
     "- 硬规则：sidet-action 外层用三个反引号；正文里的代码块用四个反引号，避免代码块提前结束动作块。不要用四个反引号包外层，旧版客户端只认三反引号外层。",
     "- sidet-action 不会立即写入；卡片会展示完整预览并等待用户确认，这是唯一的确认步骤；不要声称已经写入文件。",
     "- 一次最多输出一个动作；正文只写 1-3 句说明，不要重复笔记全文或做详细预览，也不要说“供您确认/请确认/确认后我再创建”。",
@@ -40,15 +38,10 @@ export function buildSidetFileToolContext(): string {
     "- 来源链接：库内笔记用 [[双链]]，外部网页用 [标题](URL)；不要写 [[标题>URL]] 或裸 URL 列表。",
     "- 可用工具：create_note / append_note / replace_note；目标不存在用 create_note；目标已存在且要整体更新用 replace_note；只在末尾补内容用 append_note。写已有笔记前先确认目标存在，不要平行新建近名文件。",
     "- 不要请求删除、移动、批量改名或无确认改写。",
-    `- 默认路径：Wiki -> ${DEFAULT_AGENT_WIKI_FOLDER}；Skill -> ${DEFAULT_AGENT_SKILL_FOLDER}；草稿 -> ${DEFAULT_AGENT_DRAFT_FOLDER}；记忆候选 -> ${DEFAULT_AGENT_MEMORY_FOLDER}；网页剪藏 -> ${DEFAULT_WEB_CLIPPING_FOLDER}。`,
-    "- 如果用户明确指定路径，优先使用用户路径；没有指定时按用户意图选目录：明确说整理到知识库/Wiki 才用 Wiki，明确说剪藏/收藏网页才用 Web Clippings，创建 Skill 才用 Skills；其余没有明确知识库意图的笔记（“创建一篇笔记/新建笔记/保存成笔记/写入我的笔记/写一篇”）默认用 Drafts；不要把普通笔记放进 Wiki 或网页剪藏。",
-    `- 写入 ${DEFAULT_AGENT_WIKI_FOLDER} 时，内容必须是标准 Wiki Markdown：YAML frontmatter -> 唯一标题 -> 正文。`,
-    `- 写入 ${DEFAULT_AGENT_WIKI_FOLDER}/Index.md 时，它只做知识库根页，不承接长正文。`,
-    "- 不要写 #sidet_type: 这种伪属性行，也不要重复写同一个标题。",
-    `- 下面这些 Wiki 字段与骨架只在目标路径位于 ${DEFAULT_AGENT_WIKI_FOLDER} 下时使用；其他目录忽略这一段。`,
-    ...buildWikiSchemaGuidance(),
-    "- 路径不在 Sidet/Wiki 下时（Drafts / Web Clippings / Skills / Memory），正文不要写 YAML frontmatter，也不要写 sidet_type/summary/status；分隔线后直接从 # 标题开始。",
-    "- sidet-action 格式：外层用三个反引号；正文里的代码块用四个反引号，不会提前结束动作块；header 与正文之间用一个独立的 --- 分隔；Wiki 正文的 YAML frontmatter 以它自己的 --- 开头，因此分隔线后紧跟第二行 --- 是正常的。",
+    `- 默认路径：草稿 -> ${DEFAULT_AGENT_DRAFT_FOLDER}；网页剪藏 -> ${DEFAULT_WEB_CLIPPING_FOLDER}。`,
+    "- 如果用户明确指定路径，优先使用用户路径；没有指定时：明确说剪藏/收藏网页才用 Web Clippings，其余没有明确剪藏意图的笔记（“创建一篇笔记/新建笔记/保存成笔记/写入我的笔记/写一篇/整理成笔记”）默认用 Drafts；不要把普通笔记放进网页剪藏。",
+    "- 路径不在 Sidet/Web Clippings 下时，正文不要写 YAML frontmatter；分隔线后直接从 # 标题开始。",
+    "- sidet-action 格式：外层用三个反引号；正文里的代码块用四个反引号，不会提前结束动作块；header 与正文之间用一个独立的 --- 分隔。",
     "```sidet-action",
     "tool: create_note",
     "targetPath: Sidet/Drafts/示例.md",
@@ -58,6 +51,6 @@ export function buildSidetFileToolContext(): string {
     "# 笔记标题",
     "完整 Markdown 正文",
     "```",
-    "- 上面的示例是 Drafts，故意不带 YAML；只有 Sidet/Wiki 目标才在分隔线后再写一段以 --- 开头的 YAML frontmatter。"
+    "- 上面的示例是 Drafts，正文不带 YAML frontmatter。"
   ].join("\n");
 }

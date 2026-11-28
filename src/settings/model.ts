@@ -122,7 +122,12 @@ export function normalizeUrlLaunchers(data: unknown): UrlLauncherSetting[] {
 }
 
 function normalizeWebSearchMode(value: unknown): WebSearchMode {
-  return value === "on" || value === "off" || value === "auto"
+  // 旧版 "on" 表示“总是联网”；现役开关只有 auto / off，按语义并入自动联网，
+  // 避免旧设置静默退化成“没有联网工具”。
+  if (value === "on") {
+    return "auto";
+  }
+  return value === "off" || value === "auto"
     ? value
     : DEFAULT_SETTINGS.webSearchMode;
 }

@@ -1,6 +1,15 @@
+import { isFenceLineAt, isInsideFencedBlockAt } from "../../shared/markdown-fence";
 import { stripSidetProtocolBlocks } from "./sidet-protocol";
 
 const SIDET_PROTOCOL_PREFIX = "```sidet-";
+const RESEARCH_PROTOCOL_PREFIXES = [
+  "```sidet-research",
+  "```sidet-search",
+  "```sidet-fetch",
+  "sidet-research",
+  "sidet-search",
+  "sidet-fetch"
+];
 
 export function looksLikeSidetProtocolPreamble(rawContent: string): boolean {
   const trimmed = rawContent.trimStart();
@@ -10,38 +19,57 @@ export function looksLikeSidetProtocolPreamble(rawContent: string): boolean {
   return SIDET_PROTOCOL_PREFIX.startsWith(trimmed) || trimmed.startsWith(SIDET_PROTOCOL_PREFIX);
 }
 
+/**
+ * 研究决策阶段只可能是“最终答复”或 `sidet-research` 协议块。正文在第一个非协议
+ * 字符到达前先压住，避免没有围栏的裸协议头（由补正环节处理）泄漏到消息正文。
+ */
+export function looksLikeResearchProtocolPreamble(rawContent: string): boolean {
+  const trimmed = rawContent.trimStart().toLowerCase();
+  if (!trimmed) {
+    return true;
+  }
+  return RESEARCH_PROTOCOL_PREFIXES.some(
+    (prefix) => prefix.startsWith(trimmed) || trimmed.startsWith(prefix)
+  );
+}
+
+const TAIL_LINE_PATTERN = /(?:^|\n)([ \t]{0,3})(`+)([^\r\n]*)$/;
+
 function findUnfinishedProtocolStart(rawContent: string): number | null {
   const lastFullProtocolStart = rawContent.lastIndexOf(SIDET_PROTOCOL_PREFIX);
-  if (lastFullProtocolStart >= 0) {
+  if (
+    lastFullProtocolStart >= 0
+    && isFenceLineAt(rawContent, lastFullProtocolStart)
+    && !isInsideFencedBlockAt(rawContent, lastFullProtocolStart)
+  ) {
     const closingFence = rawContent.indexOf("```", lastFullProtocolStart + SIDET_PROTOCOL_PREFIX.length);
     if (closingFence < 0) {
       return lastFullProtocolStart;
     }
   }
 
-  const lastFence = rawContent.lastIndexOf("```");
-  if (lastFence < 0) {
+  const tailMatch = rawContent.match(TAIL_LINE_PATTERN);
+  if (!tailMatch) {
+    return null;
+  }
+  const tailFence = tailMatch[2] ?? "";
+  const tailInfo = (tailMatch[3] ?? "").trim();
+  const tailStart = rawContent.length - tailFence.length - (tailMatch[3] ?? "").length;
+  // 前面已有未闭合代码块：这是闭合围栏，正文以代码块结尾时必须保留。
+  if (isInsideFencedBlockAt(rawContent, tailStart)) {
     return null;
   }
 
-  if (lastFullProtocolStart >= 0) {
-    const closingFence = rawContent.indexOf("```", lastFullProtocolStart + SIDET_PROTOCOL_PREFIX.length);
-    if (closingFence === lastFence) {
-      return null;
-    }
+  if (tailFence.length < 3) {
+    // 1-2 个反引号也可能是围栏的前半截；只有这一行还没写别的内容时先压住，
+    // 出现行内文字就按普通行内代码放行。
+    return tailInfo === "" ? tailStart : null;
   }
 
-  const tail = rawContent.slice(lastFence);
-  if (!tail.startsWith("```")) {
-    return null;
-  }
-  const afterFence = tail.slice(3);
-  // 完整的三反引号是代码块闭合，不是未完成的协议头；只有后面跟着
-  // `sidet-` 的部分前缀时才隐藏，否则回答以代码块结尾会丢掉闭合围栏。
-  if (!afterFence) {
-    return null;
-  }
-  return "sidet-".startsWith(afterFence) ? lastFence : null;
+  // 行首的裸围栏可能是协议块开头（标签还在路上），先压住；普通语言标记
+  // （js / markdown）不是协议头，立即放行。否则半截围栏会写进正文，
+  // 落库后渲染成一张空代码块。
+  return tailInfo === "" || "sidet-".startsWith(tailInfo) ? tailStart : null;
 }
 
 export function computeDisplayableAnswerText(rawContent: string): string {
@@ -52,18 +80,35 @@ export function computeDisplayableAnswerText(rawContent: string): string {
   return stripSidetProtocolBlocks(visibleSource);
 }
 
-export function createDisplayableAnswerStreamer(emitChunk: (chunk: string) => void): {
+export function createDisplayableAnswerStreamer(
+  emitChunk: (chunk: string) => void,
+  options: { holdResearchProtocolPreamble?: boolean } = {}
+): {
   sync: (rawContent: string) => string;
   finish: (rawContent: string) => string;
 } {
-  let emittedLength = 0;
+  let emittedText = "";
+  let preambleReleased = options.holdResearchProtocolPreamble !== true;
 
   const emitVisibleDiff = (visibleText: string): string => {
-    const nextChunk = visibleText.slice(emittedLength);
-    if (!nextChunk) {
+    if (!preambleReleased) {
+      if (looksLikeResearchProtocolPreamble(visibleText)) {
+        return visibleText;
+      }
+      preambleReleased = true;
+    }
+    if (visibleText.length < emittedText.length) {
+      // 协议块被隐藏后可见文本会变短：已写进消息的内容收不回来，只把基线
+      // 拉回当前可见文本，避免下一段正文从旧偏移续切、吞掉开头几个字。
+      emittedText = visibleText;
       return visibleText;
     }
-    emittedLength = visibleText.length;
+    const nextChunk = visibleText.slice(emittedText.length);
+    if (!nextChunk) {
+      emittedText = visibleText;
+      return visibleText;
+    }
+    emittedText = visibleText;
     emitChunk(nextChunk);
     return visibleText;
   };

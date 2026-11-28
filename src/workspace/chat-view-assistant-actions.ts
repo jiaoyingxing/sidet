@@ -144,13 +144,11 @@ export class ChatViewAssistantActions {
     }
 
     const previousUserMessage = this.findPreviousUserMessage(conversation, message);
-    const isKnowledgeBaseAnswer = Boolean(previousUserMessage?.knowledgeBaseRouting);
-
     const actionsEl = parentEl.createDiv({ cls: "sidet-answer-actions" });
     this.createAnswerActionButton(actionsEl, "copy", "复制回答", (event) => {
       void this.copyAnswer(message, false, event.currentTarget as HTMLButtonElement);
     });
-    if (latest && previousUserMessage && !isKnowledgeBaseAnswer) {
+    if (latest && previousUserMessage) {
       this.createAnswerActionButton(actionsEl, "refresh-cw", "重新生成回答", () => {
         void this.regenerateLatestAnswer();
       });
@@ -383,57 +381,5 @@ export class ChatViewAssistantActions {
     this.agentActionCard.render(parentEl, conversation, message);
   }
 
-  renderWikiMaintenancePlanAction(
-    parentEl: HTMLElement,
-    conversation: ConversationRecord,
-    message: MessageRecord
-  ): void {
-    if (
-      message.role !== "assistant"
-      || message.status !== "done"
-      || conversation.messages[conversation.messages.length - 1]?.id !== message.id
-      || !/^#\s*Wiki\s*维护计划\s*$/m.test(message.text.replace(/\r\n/g, "\n"))
-    ) {
-      return;
-    }
-
-    const cardEl = parentEl.createDiv({ cls: "sidet-wiki-plan-followup" });
-    const headerEl = cardEl.createDiv({ cls: "sidet-wiki-plan-followup-header" });
-    headerEl.createSpan({
-      cls: "sidet-wiki-plan-followup-title",
-      text: "继续执行"
-    });
-    headerEl.createSpan({
-      cls: "sidet-wiki-plan-followup-status",
-      text: "先生成草稿"
-    });
-
-    cardEl.createDiv({
-      cls: "sidet-wiki-plan-followup-note",
-      text: "基于上方维护计划，只推进最值得先落的一项，并生成可确认的单条写入草稿。"
-    });
-
-    const actionsEl = cardEl.createDiv({ cls: "sidet-wiki-plan-followup-actions" });
-    const continueButtonEl = actionsEl.createEl("button", {
-      cls: "mod-cta",
-      text: "生成写入草稿"
-    });
-    continueButtonEl.type = "button";
-    continueButtonEl.disabled = this.options.controller.isLeafStreaming(this.options.leaf);
-    continueButtonEl.addEventListener("click", () => {
-      if (continueButtonEl.disabled) {
-        return;
-      }
-      continueButtonEl.disabled = true;
-      continueButtonEl.setText("生成中…");
-      void this.options.controller.continueLatestWikiMaintenancePlan(this.options.leaf).then((didStart) => {
-        if (didStart) {
-          return;
-        }
-        continueButtonEl.disabled = false;
-        continueButtonEl.setText("生成写入草稿");
-      });
-    });
-  }
 
 }

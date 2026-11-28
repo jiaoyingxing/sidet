@@ -4,17 +4,13 @@ import {
   MAX_AGENT_TOOL_LINK_RESULTS,
   MAX_AGENT_TOOL_RESULT_CHARS,
   MAX_AGENT_TOOL_SEARCH_FILES,
-  MAX_AGENT_TOOL_SEARCH_RESULTS,
-  MAX_AGENT_WIKI_MEMORY_RESULTS
+  MAX_AGENT_TOOL_SEARCH_RESULTS
 } from "../../constants";
-import { getWikiKindLabel } from "../wiki/vault-agent-wiki-formatting";
-import type { WikiKnowledgeMatch } from "../wiki/wiki-memory-index";
 import type {
   AgentToolExecutionResult,
   AgentToolInvocation,
   AgentToolName,
-  AgentToolStatus,
-  WikiMemoryQuery
+  AgentToolStatus
 } from "./tool-types";
 
 /**
@@ -22,12 +18,10 @@ import type {
  */
 const MAX_AGENT_TOOL_SEARCH_FILE_CHARS = 120_000;
 const MAX_AGENT_TOOL_SEARCH_SNIPPET_CHARS = 160;
-const MAX_AGENT_TOOL_WIKI_FRAGMENT_CHARS = 300;
 const HEADING_LINE_PATTERN = /^(#{1,6})[ \t]+(.*?)(?:[ \t]+#+[ \t]*)?$/;
 
 export interface VaultToolServiceOptions {
   app: App;
-  queryWikiMemory: WikiMemoryQuery;
 }
 
 interface NoteSearchHit {
@@ -53,9 +47,9 @@ interface HeadingLineEntry {
 type LinkResolver = (linkpath: string, sourcePath: string) => TFile | null;
 
 /**
- * 四个只读 Vault 工具的执行层。
+ * 三个只读 Vault 工具的执行层。
  *
- * 只依赖注入的 `App` 与 wiki 查询函数，不读写工作区状态、不发网络请求、
+ * 只依赖注入的 `App`，不读写工作区状态、不发网络请求、
  * 不接入 ChatView / WorkspaceController / ConversationSession。
  * `web_research` 由对话运行时的组合执行器承接；这里命中只说明发生了误路由。
  */
@@ -70,8 +64,6 @@ export class VaultToolService {
         return this.runReadNote(invocation);
       case "note_links":
         return this.runNoteLinks(invocation);
-      case "wiki_memory":
-        return this.runWikiMemory(invocation);
       case "web_research":
         return this.result("web_research", "error", "联网工具需要在对话运行时执行。");
       default: {
@@ -221,50 +213,7 @@ export class VaultToolService {
     return this.result("note_links", "ok", formatNoteLinksContent(file.path, outgoing, incoming));
   }
 
-  private async runWikiMemory(invocation: AgentToolInvocation): Promise<AgentToolExecutionResult> {
-    const query = invocation.query?.trim() ?? "";
-    if (!query) {
-      return this.result("wiki_memory", "error", "缺少 query，无法查询 Wiki 记忆。");
-    }
 
-    let matches: WikiKnowledgeMatch[] = [];
-    try {
-      matches = await this.options.queryWikiMemory(query);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return this.result("wiki_memory", "error", `Wiki 记忆查询失败：${message}`);
-    }
-
-    const visibleMatches = matches.slice(0, MAX_AGENT_WIKI_MEMORY_RESULTS);
-    if (visibleMatches.length === 0) {
-      return this.result(
-        "wiki_memory",
-        "ok",
-        `Wiki 记忆中没有找到与「${query}」相关的条目。可以换用更贴近知识卡或概念页标题的关键词。`
-      );
-    }
-
-    const lines = [`Wiki 记忆命中 ${visibleMatches.length} 条（最多 ${MAX_AGENT_WIKI_MEMORY_RESULTS} 条）。`];
-    visibleMatches.forEach((match, index) => {
-      lines.push(
-        `${index + 1}. path: ${match.file.path}`,
-        `   title: ${match.file.basename}`,
-        `   kind: ${getWikiKindLabel(match)}`,
-        `   summary: ${singleLine(match.summary) || "（无摘要）"}`
-      );
-      if (match.outline.length > 0) {
-        lines.push("   outline:", ...match.outline.map((item) => `   - ${item}`));
-      } else {
-        lines.push("   outline: （无）");
-      }
-      lines.push(
-        `   related: ${formatRelatedLinks(match.relatedLinks)}`,
-        `   fragment: ${buildWikiFragment(match)}`,
-        ""
-      );
-    });
-    return this.result("wiki_memory", "ok", lines.join("\n").trimEnd());
-  }
 
   private resolveMarkdownFile(rawPath: string): TFile | null {
     const normalizedPath = rawPath.trim().replace(/\\/g, "/");
@@ -446,24 +395,7 @@ function formatLinkLine(entry: NoteLinkEntry): string {
   return `- ${entry.path}（${entry.resolved ? entry.basename : "未解析"}）`;
 }
 
-function formatRelatedLinks(relatedLinks: string[]): string {
-  return relatedLinks.length > 0
-    ? relatedLinks.map((link) => `[[${link}]]`).join("，")
-    : "（无）";
-}
 
-function buildWikiFragment(match: WikiKnowledgeMatch): string {
-  if (match.matchedFragments.length > 0) {
-    return match.matchedFragments.slice(0, 2).map(singleLine).filter(Boolean).join(" / ");
-  }
-  const excerpt = singleLine(match.excerpt);
-  if (!excerpt) {
-    return "（无片段）";
-  }
-  return excerpt.length <= MAX_AGENT_TOOL_WIKI_FRAGMENT_CHARS
-    ? excerpt
-    : `${excerpt.slice(0, MAX_AGENT_TOOL_WIKI_FRAGMENT_CHARS).trimEnd()}...`;
-}
 
 function normalizeLinkpath(rawLink: string): string {
   const withoutAlias = rawLink.split("|")[0] ?? "";

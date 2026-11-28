@@ -73,26 +73,8 @@ function createApp(Harness, documents, options = {}) {
   return { app: { vault, metadataCache }, files };
 }
 
-function createService(Harness, app, queryWikiMemory = async () => []) {
-  return new Harness.VaultToolService({ app, queryWikiMemory });
-}
-
-function createWikiMatch(Harness, fields) {
-  return {
-    file: createFile(Harness.TFile, fields.path, "", 0),
-    kind: fields.kind ?? "knowledge-card",
-    score: 1,
-    summary: fields.summary ?? "",
-    outline: fields.outline ?? [],
-    relatedLinks: fields.relatedLinks ?? [],
-    sourceLinks: [],
-    matchedTerms: [],
-    matchedFragments: fields.matchedFragments ?? [],
-    excerpt: fields.excerpt ?? "",
-    truncated: false,
-    routeHint: "",
-    structured: true
-  };
+function createService(Harness, app) {
+  return new Harness.VaultToolService({ app });
 }
 
 function assertParseInvocation(protocol) {
@@ -127,14 +109,6 @@ function assertParseInvocation(protocol) {
     "```"
   ].join("\n"));
   assert.ok(links, "note_links invocation should parse");
-
-  const wiki = protocol.parseAgentToolInvocation([
-    "```sidet-tool",
-    "tool: wiki_memory",
-    "query: 注意力机制",
-    "```"
-  ].join("\n"));
-  assert.ok(wiki, "wiki_memory invocation should parse");
 
   const firstOfTwo = protocol.parseAgentToolInvocation([
     "```sidet-tool",
@@ -257,7 +231,7 @@ function assertProtocolStrip(protocol) {
 }
 
 function assertToolRegistry(Harness) {
-  const expectedNames = ["search_notes", "read_note", "note_links", "wiki_memory", "web_research"];
+  const expectedNames = ["search_notes", "read_note", "note_links", "web_research"];
   assert.deepEqual(
     [...Harness.AGENT_TOOL_NAMES],
     expectedNames,
@@ -305,7 +279,7 @@ function assertToolRegistry(Harness) {
   );
   assert.deepEqual(
     Object.keys(vaultOnly).sort(),
-    ["search_notes", "read_note", "note_links", "wiki_memory"].sort()
+    ["search_notes", "read_note", "note_links"].sort()
   );
   const withWeb = Harness.resolveAgentToolDefinitions({ webResearch: true });
   assert.ok(withWeb.web_research, "auto web search on should expose the web tool");
@@ -561,89 +535,6 @@ function assertNoteLinks(service) {
   });
 }
 
-async function assertWikiMemory(Harness, app) {
-  const queries = [];
-  const service = createService(Harness, app, async (query) => {
-    queries.push(query);
-    return [
-      createWikiMatch(Harness, {
-        path: "Sidet/Wiki/Alpha/Index.md",
-        kind: "knowledge-card",
-        summary: "Alpha 卡摘要",
-        outline: ["# 定义", "## 变体"],
-        relatedLinks: ["Beta", "Gamma"],
-        matchedFragments: ["「Alpha 是……」"],
-        excerpt: "Alpha 正文摘录"
-      }),
-      createWikiMatch(Harness, {
-        path: "Sidet/Wiki/Beta.md",
-        kind: "concept-page",
-        summary: "Beta 概念页",
-        excerpt: "Beta 概念正文"
-      })
-    ];
-  });
-
-  const result = await service.execute({
-    tool: "wiki_memory",
-    query: "Alpha 注意力",
-    path: null,
-    heading: null,
-    limit: null
-  });
-  assert.deepEqual(queries, ["Alpha 注意力"]);
-  assert.equal(result.status, "ok");
-  assert.match(result.content, /Wiki 记忆命中 2 条（最多 3 条）/);
-  assert.match(result.content, /title: Index/);
-  assert.match(result.content, /kind: 知识卡/);
-  assert.match(result.content, /summary: Alpha 卡摘要/);
-  assert.match(result.content, /- # 定义/);
-  assert.match(result.content, /related: \[\[Beta\]\]，\[\[Gamma\]\]/);
-  assert.match(result.content, /fragment: 「Alpha 是……」/);
-  assert.match(result.content, /kind: 概念页/);
-  assert.match(result.content, /fragment: Beta 概念正文/);
-
-  const emptyService = createService(Harness, app, async () => []);
-  const empty = await emptyService.execute({
-    tool: "wiki_memory",
-    query: "什么都没有",
-    path: null,
-    heading: null,
-    limit: null
-  });
-  assert.equal(empty.status, "ok");
-  assert.match(empty.content, /Wiki 记忆中没有找到与「什么都没有」相关的条目/);
-
-  const manyService = createService(Harness, app, async () => [1, 2, 3, 4, 5].map((index) =>
-    createWikiMatch(Harness, { path: `Sidet/Wiki/W${index}.md`, summary: `W${index}` })
-  ));
-  const many = await manyService.execute({
-    tool: "wiki_memory",
-    query: "W",
-    path: null,
-    heading: null,
-    limit: null
-  });
-  assert.equal(
-    many.content.split("\n").filter((line) => /^\d+\. path: /.test(line)).length,
-    3,
-    "wiki_memory should surface at most 3 entries"
-  );
-
-  const failingService = createService(Harness, app, async () => {
-    throw new Error("索引不可用");
-  });
-  const failed = await failingService.execute({
-    tool: "wiki_memory",
-    query: "Alpha",
-    path: null,
-    heading: null,
-    limit: null
-  });
-  assert.equal(failed.status, "error");
-  assert.match(failed.content, /Wiki 记忆查询失败：索引不可用/);
-}
-
 async function assertExecutionToResultBlock(Harness, service) {
   const result = await service.execute({
     tool: "read_note",
@@ -742,7 +633,6 @@ async function main() {
     await assertSearchNotes(service);
     await assertReadNote(service);
     await assertNoteLinks(service);
-    await assertWikiMemory(Harness, app);
     await assertExecutionToResultBlock(Harness, service);
     await assertWebToolMisroute(service);
 

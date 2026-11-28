@@ -65,7 +65,7 @@ async function main() {
       ".sidet-message-meta-panel-label": label
     },
     many: {
-      ".sidet-agent-inline-action, .sidet-wiki-plan-followup": [inlineA, inlineB],
+      ".sidet-agent-inline-action": [inlineA, inlineB],
       ".sidet-answer-sources": [answerSources],
       ".sidet-answer-versions": [answerVersions],
       ".sidet-answer-actions, .sidet-answer-error": [answerActions],

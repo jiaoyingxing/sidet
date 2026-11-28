@@ -48,9 +48,6 @@ function createControllerHarness(WorkspaceController) {
     setConversationModelConfigId: async () => undefined
   };
   controller.session = {
-    sendLocalAssistantReply: async (...args) => {
-      controller.__capturedLocalReplyArgs = args;
-    },
     sendLocalAssistantTask: async (...args) => {
       if ((args[3]?.length ?? 0) > 0) {
         controller.__capturedNormalTaskArgs = args;
@@ -69,12 +66,10 @@ function createControllerHarness(WorkspaceController) {
     updateChatLeafState: () => undefined
   };
   controller.ensureConversationStoreReady = async () => undefined;
-  controller.refreshKnowledgeBases = async () => [];
   controller.getChatLeafState = () => ({
     conversationId: "conversation-1",
     draft: "",
     modelConfigId: modelConfig.id,
-    knowledgeBaseIndexPath: null,
     webSearchEnabled: true
   });
   controller.getSettings = () => ({
@@ -84,21 +79,8 @@ function createControllerHarness(WorkspaceController) {
     exportFolder: "Sidet/chat",
     homePinnedCommands: []
   });
-  controller.getSelectedKnowledgeBaseState = () => ({
-    mode: "none",
-    indexPath: null,
-    displayName: null,
-    knowledgeBase: null
-  });
-  controller.resolveSelectedKnowledgeBaseState = () => ({
-    mode: "none",
-    indexPath: null,
-    displayName: null,
-    knowledgeBase: null
-  });
   controller.buildPreSendAgentContext = async () => ({
-    requestContext: "当前时间：2026-06-03",
-    knowledgeBaseRouting: undefined
+    requestContext: "当前时间：2026-06-03"
   });
   controller.isWebSearchEnabled = () => true;
   controller.__webSearchTaskRuns = 0;
@@ -178,45 +160,12 @@ async function assertAttachmentsBypassWebSearch(controller) {
   assert.equal(controller.__webSearchTaskRuns, 0, "attachments should not enter the model-driven web search task");
 }
 
-async function assertKnowledgeBaseFeedbackStartsWithUserMessage(controller) {
-  controller.__capturedLocalReplyArgs = undefined;
-  controller.__capturedLocalTaskArgs = undefined;
-  controller.__capturedNormalTaskArgs = undefined;
-  controller.__capturedSendArgs = undefined;
-  controller.getSelectedKnowledgeBaseState = () => ({
-    mode: "all",
-    indexPath: "__sidet_all_knowledge_bases__",
-    displayName: "全部知识库",
-    knowledgeBase: null
-  });
-
-  const leaf = {};
-  await controller.sendMessageFromLeaf(leaf, "同步", []);
-
-  assert.ok(controller.__capturedLocalReplyArgs, "knowledge base mode should use the local assistant reply chain");
-  const sendOptions = controller.__capturedLocalReplyArgs[4];
-  assert.deepEqual(
-    sendOptions.knowledgeBaseRouting,
-    {
-      mode: "all",
-      displayName: "全部知识库",
-      status: "searching",
-      resultCount: 0,
-      hits: []
-    },
-    "the user message should carry visible knowledge-base search feedback before the async search starts"
-  );
-  assert.equal(controller.__capturedLocalTaskArgs, undefined);
-  assert.equal(controller.__capturedSendArgs, undefined);
-}
-
 async function main() {
   try {
     const module = await loadBundledModule("src/workspace/workspace-controller.ts");
     const controller = createControllerHarness(module.WorkspaceController);
     await assertPureTextUsesWebSearch(controller);
     await assertAttachmentsBypassWebSearch(controller);
-    await assertKnowledgeBaseFeedbackStartsWithUserMessage(controller);
     console.log("sidet web search routing logic test passed");
   } finally {
     for (const tempDir of tempDirs) {

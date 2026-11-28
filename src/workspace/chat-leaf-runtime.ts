@@ -34,10 +34,6 @@ export interface SetComposerDraftOptions {
   immediatePersistence?: boolean;
 }
 
-export interface SetKnowledgeBaseOptions {
-  immediatePersistence?: boolean;
-}
-
 export interface SetWebSearchEnabledOptions {
   immediatePersistence?: boolean;
 }
@@ -113,7 +109,6 @@ export class ChatLeafRuntime {
       messageRevealRequest: entry.messageRevealRequest,
       messageRevealRequestNonce: entry.messageRevealRequestNonce,
       modelConfigId: entry.state.modelConfigId ?? null,
-      knowledgeBaseIndexPath: entry.state.knowledgeBaseIndexPath ?? null,
       webSearchEnabled: entry.state.webSearchEnabled === true
     };
   }
@@ -302,34 +297,6 @@ export class ChatLeafRuntime {
     this.persistChatLeafState({ immediate: false });
     entry.listeners.emit();
     return existingDraft.length > 0;
-  }
-
-  setKnowledgeBaseIndexPath(
-    leaf: WorkspaceLeaf,
-    knowledgeBaseIndexPath: string | null,
-    options: SetKnowledgeBaseOptions = {}
-  ): void {
-    const entry = this.ensureChatLeafEntry(leaf);
-    const normalized = typeof knowledgeBaseIndexPath === "string" && knowledgeBaseIndexPath.trim().length > 0
-      ? knowledgeBaseIndexPath.trim()
-      : null;
-    if ((entry.state.knowledgeBaseIndexPath ?? null) === normalized) {
-      if (options.immediatePersistence) {
-        void this.commitChatLeafLayoutSave();
-      }
-      return;
-    }
-
-    entry.state = {
-      ...entry.state,
-      knowledgeBaseIndexPath: normalized
-    };
-    this.rememberModeState(entry.state);
-    writeEphemeralChatLeafState(leaf, entry.state);
-    this.persistChatLeafState({ immediate: options.immediatePersistence ?? false });
-    entry.listeners.emit();
-    this.options.refreshLeafHeader(leaf);
-    this.options.emitWorkspaceState();
   }
 
   setWebSearchEnabled(

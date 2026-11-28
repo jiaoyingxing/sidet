@@ -33,20 +33,6 @@ export interface WebpageMessageAttachment {
 
 export type MessageAttachment = ImageMessageAttachment | MarkdownMessageAttachment | WebpageMessageAttachment;
 
-export interface MessageKnowledgeBaseRoutingHit {
-  path: string;
-  basename: string;
-  kindLabel: string;
-}
-
-export interface MessageKnowledgeBaseRoutingInfo {
-  mode: "single" | "all";
-  displayName: string;
-  status?: "searching" | "complete" | "error";
-  resultCount: number;
-  hits: MessageKnowledgeBaseRoutingHit[];
-}
-
 export interface MessageMetaPanelSource {
   title: string;
   url?: string;
@@ -118,7 +104,6 @@ export interface MessageRecord {
   /** 失败原因；有部分正文时正文保留，原因单独展示。 */
   errorText?: string;
   attachments?: MessageAttachment[];
-  knowledgeBaseRouting?: MessageKnowledgeBaseRoutingInfo;
   metaPanels?: MessageMetaPanel[];
   sources?: MessageSource[];
   /** 已成功写入的提案记录；失败或待确认不落库。 */
@@ -245,7 +230,6 @@ export interface ChatLeafState extends Record<string, unknown> {
   conversationId: string | null;
   draft: string;
   modelConfigId: string | null;
-  knowledgeBaseIndexPath: string | null;
   webSearchEnabled: boolean;
 }
 
@@ -274,7 +258,6 @@ export interface ChatLeafViewState {
   messageRevealRequest: ChatLeafMessageRevealRequest | null;
   messageRevealRequestNonce: number;
   modelConfigId: string | null;
-  knowledgeBaseIndexPath: string | null;
   webSearchEnabled: boolean;
 }
 

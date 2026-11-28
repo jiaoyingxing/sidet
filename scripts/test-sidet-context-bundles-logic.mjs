@@ -42,22 +42,19 @@ function assertTrimHelper(module) {
 function assertRouterBundle(module) {
   const bundle = module.buildAgentRouterContextBundle({
     skillRouteLines: ["1. 技能A", "适用：测试"],
-    knowledgeBaseRouteLines: ["1. [[Sidet/Wiki/Index.md]]"],
-    selectedKnowledgeBaseNote: "1. 全部知识库；范围：仅在已识别知识库内做关键词检索。",
-    wikiRouteLines: ["1. [[Sidet/Wiki/Test.md]]；类型：知识卡；匹配：test；读取：先看摘要"],
-    wikiSections: [
-      {
-        heading: "1. Test",
-        metadata: [{ label: "路径", value: "Sidet/Wiki/Test.md" }],
-        content: "# Test"
-      }
-    ],
     truncated: true
   });
   assert.equal(bundle.kind, "agent-router-context");
   assert.equal(bundle.truncated, true);
   assert.ok(bundle.footer?.some((line) => line.includes("预览确认链")));
-  assert.ok(bundle.footer?.some((line) => line.includes("全部知识库")));
+  assert.ok(bundle.sections.some((section) => section.heading.includes("Skill")));
+
+  const empty = module.buildAgentRouterContextBundle({
+    skillRouteLines: [],
+    truncated: false
+  });
+  assert.equal(empty.sections.length, 0);
+  assert.ok(empty.description?.some((line) => line.includes("没有命中")));
 }
 
 async function main() {

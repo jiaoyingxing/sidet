@@ -60,7 +60,7 @@ function createLeaf({ type = "empty", state = {}, active = false, container = {}
 }
 
 function createHarness(
-  modeState = { knowledgeBaseIndexPath: null, webSearchEnabled: false },
+  modeState = { webSearchEnabled: false },
   options = {}
 ) {
   const defaultModelConfigId = "model-default";
@@ -103,7 +103,6 @@ function createHarness(
       conversationId: "conversation-0",
       draft: "旧草稿",
       modelConfigId: defaultModelConfigId,
-      knowledgeBaseIndexPath: modeState.knowledgeBaseIndexPath ?? null,
       webSearchEnabled: modeState.webSearchEnabled === true
     },
     hydrateChatLeafState: (_leaf, state) => {
@@ -136,7 +135,6 @@ function createHarness(
 
 async function assertOpenNewChatTabPreservesMode(module) {
   const harness = createHarness({
-    knowledgeBaseIndexPath: null,
     webSearchEnabled: true
   });
   const navigation = new module.WorkspaceLeafNavigation(
@@ -154,12 +152,10 @@ async function assertOpenNewChatTabPreservesMode(module) {
   assert.equal(harness.createdLeaves.length, 1, "openNewChatTab should create one leaf when no homepage leaf exists");
   assert.equal(leaf.getViewState().state.modelConfigId, harness.defaultModelConfigId, "new chat leaf should inherit the current default model");
   assert.equal(leaf.getViewState().state.webSearchEnabled, true, "new chat leaf should inherit the persistent web search state");
-  assert.equal(leaf.getViewState().state.knowledgeBaseIndexPath, null, "new chat leaf should keep the inherited knowledge-base mode seed");
 }
 
 async function assertOpenConversationWithoutTargetLeafPreservesMode(module) {
   const harness = createHarness({
-    knowledgeBaseIndexPath: "Sidet/Wiki/Index.md",
     webSearchEnabled: false
   });
   const navigation = new module.WorkspaceLeafNavigation(
@@ -175,7 +171,6 @@ async function assertOpenConversationWithoutTargetLeafPreservesMode(module) {
   assert.ok(leaf, "openConversationInLeaf should create a leaf when the conversation exists");
   assert.equal(leaf.getViewState().state.conversationId, "conversation-1", "newly opened leaf should target the requested conversation");
   assert.equal(leaf.getViewState().state.modelConfigId, harness.defaultModelConfigId, "conversation leaf should carry the conversation model id");
-  assert.equal(leaf.getViewState().state.knowledgeBaseIndexPath, "Sidet/Wiki/Index.md", "conversation leaf should inherit the persistent knowledge-base selection");
   assert.equal(leaf.getViewState().state.webSearchEnabled, false, "conversation leaf should preserve the inherited web-search mode");
   assert.deepEqual(
     harness.runtime.revealedRequests,
@@ -198,14 +193,13 @@ async function assertOpenConversationOnExistingLeafQueuesReveal(module) {
     active: true
   });
   const harness = createHarness(
-    { knowledgeBaseIndexPath: null, webSearchEnabled: false },
+    { webSearchEnabled: false },
     { chatLeaves: [existingLeaf] }
   );
   existingLeaf.__chatLeafState = {
     conversationId: "conversation-0",
     draft: "旧草稿",
     modelConfigId: harness.defaultModelConfigId,
-    knowledgeBaseIndexPath: null,
     webSearchEnabled: false
   };
   const navigation = new module.WorkspaceLeafNavigation(
@@ -242,7 +236,6 @@ async function assertOpenConversationOnExistingLeafQueuesReveal(module) {
 
 async function assertResetFreshConversationKeepsMode(module) {
   const harness = createHarness({
-    knowledgeBaseIndexPath: null,
     webSearchEnabled: false
   });
   const navigation = new module.WorkspaceLeafNavigation(
@@ -256,7 +249,6 @@ async function assertResetFreshConversationKeepsMode(module) {
     conversationId: "conversation-1",
     draft: "待发送草稿",
     modelConfigId: harness.defaultModelConfigId,
-    knowledgeBaseIndexPath: null,
     webSearchEnabled: true
   };
 

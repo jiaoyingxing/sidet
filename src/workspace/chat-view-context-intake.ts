@@ -44,7 +44,6 @@ interface ChatViewContextIntakeOptions {
   isEditingDraftActive: () => boolean;
   cancelEditingMessage: (options: { focusComposer: boolean }) => void;
   removeSelectedLinkText: (match: WebUrlMatch, draftSnapshot: string) => string;
-  openKnowledgeBaseMenu: (anchorEl: HTMLElement) => void;
   openModelMenu: (anchorEl: HTMLElement) => void;
   getAdditionalLeadingChips?: () => DraftLeadingChip[];
 }
@@ -324,23 +323,6 @@ export class ChatViewContextIntake {
 
   private buildLeadingChips(): DraftLeadingChip[] {
     const leadingChips: DraftLeadingChip[] = [];
-
-    const selectedKnowledgeBaseState = this.options.controller.getSelectedKnowledgeBaseState(this.options.leaf);
-    if (selectedKnowledgeBaseState.mode !== "none" && selectedKnowledgeBaseState.displayName) {
-      leadingChips.push({
-        label: selectedKnowledgeBaseState.displayName,
-        icon: selectedKnowledgeBaseState.mode === "all" ? "layers" : "library",
-        removeLabel: `取消知识库：${selectedKnowledgeBaseState.displayName}`,
-        tone: "default",
-        onRemove: () => {
-          this.options.controller.setSelectedKnowledgeBase(this.options.leaf, null);
-        },
-        clickable: true,
-        onClick: (anchorEl) => {
-          this.options.openKnowledgeBaseMenu(anchorEl);
-        }
-      });
-    }
 
     if (this.options.controller.getLeafViewState(this.options.leaf).webSearchEnabled) {
       leadingChips.push({

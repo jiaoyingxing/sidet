@@ -40,27 +40,6 @@ export class ChatContextInsertionService {
     );
   }
 
-  async insertMemoryCandidatePromptIntoDraft(targetLeaf?: WorkspaceLeaf): Promise<void> {
-    try {
-      const leaf = targetLeaf && targetLeaf.getViewState().type === CHAT_VIEW_TYPE
-        ? targetLeaf
-        : this.options.getNavigationChatLeaf();
-      if (!leaf) {
-        throw new Error("当前没有可生成记忆候选的 Sidet 对话。");
-      }
-
-      const conversation = this.options.getConversationForLeaf(leaf);
-      if (!conversation) {
-        throw new Error("当前标签页还没有对话可提炼。");
-      }
-
-      const result = this.options.vaultAgent.buildMemoryCandidateDraft(conversation);
-      this.options.mergeContextIntoComposerDraft(leaf, result);
-      new Notice(result.truncated ? "已生成记忆候选草稿（已截断）。" : "已生成记忆候选草稿。", 2600);
-    } catch (error) {
-      this.showContextError(error);
-    }
-  }
 
   async insertDraftNotePreviewPromptIntoDraft(targetLeaf?: WorkspaceLeaf): Promise<void> {
     try {

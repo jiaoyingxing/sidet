@@ -174,6 +174,54 @@ async function assertSecondResearchThenAnswer(loopModule) {
   assert.equal(calls.decisions, 2);
 }
 
+async function assertStreamingDecision(loopModule) {
+  const calls = { visible: [], commits: [] };
+  const loop = await loopModule.runWebResearchLoop(createBaseOptions({
+    streamDecisionContent: true,
+    callDecisionModel: async () => ({
+      contentText: "流式答案",
+      reasoningText: "",
+      visibleContentStreamed: true
+    }),
+    callRepairModel: async () => {
+      throw new Error("should not repair");
+    },
+    runResearchRound: async (round, question, _budget, state) => makeRound(round, question, state),
+    streamFinalAnswer: async () => "final",
+    onVisibleContent: (text) => calls.visible.push(text),
+    commitSources: (state) => calls.commits.push(state.pages.map((page) => page.sourceIndex)),
+    signal: new AbortController().signal
+  }));
+
+  assert.equal(loop.finalText, "流式答案");
+  assert.deepEqual(calls.visible, [], "streamed answer should not be appended again");
+  assert.deepEqual(calls.commits, [[1]], "sources should be committed before the streaming decision");
+}
+
+async function assertStreamingDecisionFallsBackToAppend(loopModule) {
+  const calls = { visible: [], commits: [] };
+  const loop = await loopModule.runWebResearchLoop(createBaseOptions({
+    streamDecisionContent: true,
+    callDecisionModel: async () => ({
+      contentText: "未流式答案",
+      reasoningText: "",
+      visibleContentStreamed: false
+    }),
+    callRepairModel: async () => {
+      throw new Error("should not repair");
+    },
+    runResearchRound: async (round, question, _budget, state) => makeRound(round, question, state),
+    streamFinalAnswer: async () => "final",
+    onVisibleContent: (text) => calls.visible.push(text),
+    commitSources: (state) => calls.commits.push(state.pages.map((page) => page.sourceIndex)),
+    signal: new AbortController().signal
+  }));
+
+  assert.equal(loop.finalText, "未流式答案");
+  assert.deepEqual(calls.visible, ["未流式答案"], "non-streamed reply should still be appended once");
+  assert.deepEqual(calls.commits, [[1]], "sources should still be committed once");
+}
+
 async function assertMalformedRepair(loopModule) {
   const calls = { repairs: 0, visible: [], commits: [] };
   const loop = await loopModule.runWebResearchLoop(createBaseOptions({
@@ -299,6 +347,8 @@ async function main() {
     const loopModule = await loadBundledModule("src/agent/web-search/research-loop.ts");
     await assertDirectAnswer(loopModule);
     await assertSecondResearchThenAnswer(loopModule);
+    await assertStreamingDecision(loopModule);
+    await assertStreamingDecisionFallsBackToAppend(loopModule);
     await assertMalformedRepair(loopModule);
     await assertRepairEmptyForcesFinalAnswer(loopModule);
     await assertRoundBudgetExhausted(loopModule);

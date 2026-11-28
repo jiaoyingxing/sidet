@@ -121,7 +121,6 @@ function createRendering(module) {
     renderConversation: () => undefined,
     setPlainMessageContent: () => undefined,
     renderInlineToolAction: () => undefined,
-    renderWikiMaintenancePlanAction: () => undefined,
     importWebSearchResultUrl: () => undefined
   });
 
@@ -245,7 +244,6 @@ function assertQueueScrollIntentCancelsComposerRestore(module) {
     shouldRenderAssistantMessageMarkdown: () => false,
     setPlainMessageContent: () => undefined,
     renderInlineToolAction: () => undefined,
-    renderWikiMaintenancePlanAction: () => undefined,
     openWebpageAttachmentPreview: () => undefined,
     syncComposerButtons: () => undefined,
     syncLeafHeader: () => undefined,
@@ -265,80 +263,6 @@ function assertQueueScrollIntentCancelsComposerRestore(module) {
   assert.equal(composerRestoreCancelCalls, 1, "queueing explicit scroll should cancel composer restore");
 }
 
-function assertKnowledgeBaseRoutingUpdateInvalidatesConversationRender(module) {
-  const runtime = new module.ChatViewConversationRuntime({
-    controller: {},
-    leaf: {},
-    assistantRendering: {},
-    messageActions: {},
-    getMessagesListEl: () => null,
-    addChild: () => undefined,
-    trackMessageRenderComponent: () => undefined,
-    resetMessageRenderComponents: () => undefined,
-    renderAssistantMetaBlocks: () => undefined,
-    shouldRenderAssistantMessageMarkdown: () => false,
-    setPlainMessageContent: () => undefined,
-    renderInlineToolAction: () => undefined,
-    renderWikiMaintenancePlanAction: () => undefined,
-    openWebpageAttachmentPreview: () => undefined,
-    syncComposerButtons: () => undefined,
-    syncLeafHeader: () => undefined,
-    syncScrollAffordances: () => undefined,
-    getScrollHost: () => ({ scrollTop: 0 }),
-    getScrollPinnedToBottom: () => false,
-    setScrollHostTop: () => undefined,
-    setScrollPinnedToBottom: () => undefined,
-    closeInlineSuggests: () => undefined,
-    cancelComposerScrollRestore: () => undefined
-  });
-  const conversation = {
-    id: "conv-kb",
-    messages: [
-      {
-        id: "user-kb",
-        role: "user",
-        text: "同步",
-        status: "done",
-        knowledgeBaseRouting: {
-          mode: "all",
-          displayName: "全部知识库",
-          status: "searching",
-          resultCount: 0,
-          hits: []
-        }
-      },
-      {
-        id: "assistant-kb",
-        role: "assistant",
-        text: "",
-        status: "streaming"
-      }
-    ]
-  };
-
-  const searchingRevision = runtime.buildMessageRevision(conversation);
-  conversation.messages[0].knowledgeBaseRouting = {
-    mode: "all",
-    displayName: "全部知识库",
-    status: "complete",
-    resultCount: 1,
-    hits: [
-      {
-        path: "Sidet/Wiki/同步常见问题.md",
-        basename: "同步常见问题",
-        kindLabel: "Wiki"
-      }
-    ]
-  };
-  const completeRevision = runtime.buildMessageRevision(conversation);
-
-  assert.notEqual(
-    completeRevision,
-    searchingRevision,
-    "routing metadata on the user message must rerender immediately even while the assistant placeholder is still the last message"
-  );
-}
-
 function assertOlderAnswerVariantSwitchInvalidatesConversationRender(module) {
   const runtime = new module.ChatViewConversationRuntime({
     controller: {},
@@ -353,7 +277,6 @@ function assertOlderAnswerVariantSwitchInvalidatesConversationRender(module) {
     shouldRenderAssistantMessageMarkdown: () => false,
     setPlainMessageContent: () => undefined,
     renderInlineToolAction: () => undefined,
-    renderWikiMaintenancePlanAction: () => undefined,
     openWebpageAttachmentPreview: () => undefined,
     syncComposerButtons: () => undefined,
     syncLeafHeader: () => undefined,
@@ -402,111 +325,6 @@ function assertOlderAnswerVariantSwitchInvalidatesConversationRender(module) {
     runtime.buildOtherMessagesRevision({ id: "conv-single", messages: [conversation.messages[3]] }),
     "",
     "a single-message conversation has no other-message revision"
-  );
-}
-
-function assertKnowledgeBaseRoutingUpdateBypassesLatestAssistantPatch(module) {
-  let fullRenderCalls = 0;
-  let assistantPatchCalls = 0;
-  const conversation = {
-    id: "conv-kb-live",
-    messages: [
-      {
-        id: "user-kb-live",
-        role: "user",
-        text: "同步",
-        status: "done",
-        knowledgeBaseRouting: {
-          mode: "all",
-          displayName: "全部知识库",
-          status: "searching",
-          resultCount: 0,
-          hits: []
-        }
-      },
-      {
-        id: "assistant-kb-live",
-        role: "assistant",
-        text: "# 知识库检索结果",
-        status: "streaming"
-      }
-    ]
-  };
-  const controller = {
-    getChatLeafState: () => ({ conversationId: conversation.id }),
-    store: {
-      getConversation: () => conversation
-    }
-  };
-  const runtime = new module.ChatViewConversationRuntime({
-    controller,
-    leaf: {},
-    assistantRendering: {
-      canPatchLatestAssistantMessage: () => true,
-      patchLatestAssistantMessage: () => {
-        assistantPatchCalls += 1;
-        return true;
-      }
-    },
-    messageActions: {},
-    getMessagesListEl: () => null,
-    addChild: () => undefined,
-    trackMessageRenderComponent: () => undefined,
-    resetMessageRenderComponents: () => undefined,
-    renderAssistantMetaBlocks: () => undefined,
-    shouldRenderAssistantMessageMarkdown: () => false,
-    setPlainMessageContent: () => undefined,
-    renderInlineToolAction: () => undefined,
-    renderWikiMaintenancePlanAction: () => undefined,
-    openWebpageAttachmentPreview: () => undefined,
-    syncComposerButtons: () => undefined,
-    syncLeafHeader: () => undefined,
-    syncScrollAffordances: () => undefined,
-    getScrollHost: () => ({ scrollTop: 0 }),
-    getScrollPinnedToBottom: () => false,
-    setScrollHostTop: () => undefined,
-    setScrollPinnedToBottom: () => undefined,
-    closeInlineSuggests: () => undefined,
-    cancelComposerScrollRestore: () => undefined
-  });
-  runtime.lastConversationId = conversation.id;
-  runtime.lastMessageRevision = runtime.buildMessageRevision(conversation);
-  runtime.lastKnowledgeBaseRoutingRevision = [
-    "user-kb-live",
-    "all",
-    "全部知识库",
-    "searching",
-    0,
-    ""
-  ].join(":");
-  runtime.renderConversation = () => {
-    fullRenderCalls += 1;
-  };
-
-  conversation.messages[0].knowledgeBaseRouting = {
-    mode: "all",
-    displayName: "全部知识库",
-    status: "complete",
-    resultCount: 1,
-    hits: [
-      {
-        path: "Sidet/Wiki/同步常见问题.md",
-        basename: "同步常见问题",
-        kindLabel: "Wiki"
-      }
-    ]
-  };
-  runtime.handleStoreChange();
-
-  assert.equal(
-    assistantPatchCalls,
-    0,
-    "routing changes on the preceding user message must not be swallowed by the latest-assistant patch path"
-  );
-  assert.equal(
-    fullRenderCalls,
-    1,
-    "routing changes on the preceding user message must rerender the conversation in the current view"
   );
 }
 
@@ -642,7 +460,6 @@ async function assertManagedConversationRenderOwnsScrollRestoration(module) {
     renderConversation: () => undefined,
     setPlainMessageContent: () => undefined,
     renderInlineToolAction: () => undefined,
-    renderWikiMaintenancePlanAction: () => undefined,
     importWebSearchResultUrl: () => undefined
   });
 
@@ -703,7 +520,6 @@ async function assertPatchedAssistantRenderCanStillRestorePreservedScroll(module
     renderConversation: () => undefined,
     setPlainMessageContent: () => undefined,
     renderInlineToolAction: () => undefined,
-    renderWikiMaintenancePlanAction: () => undefined,
     importWebSearchResultUrl: () => undefined
   });
 
@@ -898,9 +714,7 @@ async function main() {
     assertKeyboardPresentationAnchorsBottomSynchronously(assistantRenderingModule);
     assertBottomFollowIntentSurvivesLayoutScrollEvents(assistantRenderingModule);
     assertQueueScrollIntentCancelsComposerRestore(conversationRuntimeModule);
-    assertKnowledgeBaseRoutingUpdateInvalidatesConversationRender(conversationRuntimeModule);
     assertOlderAnswerVariantSwitchInvalidatesConversationRender(conversationRuntimeModule);
-    assertKnowledgeBaseRoutingUpdateBypassesLatestAssistantPatch(conversationRuntimeModule);
     assertLegacyMobileScrollCompensationsStayRemoved();
     await assertManagedConversationRenderOwnsScrollRestoration(assistantRenderingModule);
     await assertPatchedAssistantRenderCanStillRestorePreservedScroll(assistantRenderingModule);

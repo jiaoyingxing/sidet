@@ -1,8 +1,4 @@
 import { Menu, Platform } from "obsidian";
-import {
-  ALL_KNOWLEDGE_BASES_DISPLAY_NAME,
-  ALL_KNOWLEDGE_BASES_SELECTION
-} from "../constants";
 import { openInlineActionMenu, type InlineActionMenuHandle, type InlineActionMenuItem } from "./inline-action-menu";
 import { showDesktopMenuAtAnchor } from "./desktop-menu";
 import type { WorkspaceController } from "./workspace-controller";
@@ -86,62 +82,6 @@ function openAdaptiveActionMenu(
   };
 }
 
-async function buildKnowledgeBaseMenuItems(
-  controller: WorkspaceController,
-  leaf: WorkspaceLeaf
-): Promise<AdaptiveMenuItem[]> {
-  await controller.refreshKnowledgeBases().catch((error) => {
-    console.warn("Sidet：打开知识库菜单前刷新识别失败。", error);
-  });
-
-  const currentKnowledgeBases = controller.getAvailableKnowledgeBases();
-  const selectedKnowledgeBaseState = controller.getSelectedKnowledgeBaseState(leaf);
-
-  return [
-    {
-      title: ALL_KNOWLEDGE_BASES_DISPLAY_NAME,
-      desktopTitle: ALL_KNOWLEDGE_BASES_DISPLAY_NAME,
-      icon: "layers",
-      selected: selectedKnowledgeBaseState.mode === "all",
-      onSelect: () => {
-        controller.setSelectedKnowledgeBase(leaf, ALL_KNOWLEDGE_BASES_SELECTION);
-      }
-    },
-    ...(currentKnowledgeBases.length > 0
-      ? currentKnowledgeBases.map((knowledgeBase, index) => ({
-          title: knowledgeBase.displayName,
-          desktopTitle: knowledgeBase.displayName,
-          icon: "library",
-          selected: selectedKnowledgeBaseState.mode === "single"
-            && selectedKnowledgeBaseState.indexPath === knowledgeBase.indexPath,
-          sectionStart: index === 0,
-          onSelect: () => {
-            controller.setSelectedKnowledgeBase(leaf, knowledgeBase.indexPath);
-          }
-        }))
-      : [
-          {
-            title: "暂无可用知识库",
-            desktopTitle: "暂无可用知识库",
-            icon: "library",
-            disabled: true,
-            sectionStart: true,
-            onSelect: () => undefined
-          }
-        ])
-  ];
-}
-
-export async function openKnowledgeBaseSelectionMenu(
-  anchorEl: HTMLElement,
-  controller: WorkspaceController,
-  onClose: () => void,
-  leaf: WorkspaceLeaf
-): Promise<InlineActionMenuHandle> {
-  const items = await buildKnowledgeBaseMenuItems(controller, leaf);
-  return openAdaptiveActionMenu(anchorEl, items, onClose);
-}
-
 export function openChatModelMenu(
   anchorEl: HTMLElement,
   controller: WorkspaceController,
@@ -150,7 +90,6 @@ export function openChatModelMenu(
 ): InlineActionMenuHandle {
   const configuredModelConfigs = controller.getAvailableModelConfigs();
   const selectedModelConfigId = controller.getLeafModelConfigId(leaf);
-  const selectedKnowledgeBaseState = controller.getSelectedKnowledgeBaseState(leaf);
   const webSearchEnabled = controller.isWebSearchEnabled(leaf);
   let activeMenu: InlineActionMenuHandle | null = null;
   let didNotifyClose = false;
@@ -193,30 +132,6 @@ export function openChatModelMenu(
       sectionStart: configuredModelConfigs.length > 0,
       onSelect: () => {
         controller.setWebSearchEnabled(leaf, !controller.isWebSearchEnabled(leaf));
-      }
-    },
-    {
-      desktopTitle: "知识库模式",
-      title: selectedKnowledgeBaseState.displayName
-        ? `知识库：${selectedKnowledgeBaseState.displayName}`
-        : "知识库：关闭",
-      icon: "library",
-      sectionStart: true,
-      closeBeforeSelect: false,
-      onSelect: () => {
-        suppressNextCloseNotification = true;
-        window.setTimeout(() => {
-          void openKnowledgeBaseSelectionMenu(anchorEl, controller, () => {
-            activeMenu = null;
-            notifyClose();
-          }, leaf).then((handle) => {
-            if (didNotifyClose) {
-              handle.close();
-              return;
-            }
-            activeMenu = handle;
-          });
-        }, 0);
       }
     }
   ];

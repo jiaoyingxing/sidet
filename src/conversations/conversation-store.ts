@@ -468,21 +468,10 @@ export class ConversationStore {
   async appendUserMessage(
     conversationId: string,
     text: string,
-    attachments: MessageRecord["attachments"] = [],
-    options: {
-      knowledgeBaseRouting?: MessageRecord["knowledgeBaseRouting"];
-    } = {}
+    attachments: MessageRecord["attachments"] = []
   ): Promise<MessageRecord> {
     await this.ensureLoaded();
-    return this.messageRuntime.appendUserMessage(conversationId, text, attachments, options);
-  }
-
-  updateMessageKnowledgeBaseRouting(
-    conversationId: string,
-    messageId: string,
-    knowledgeBaseRouting: MessageRecord["knowledgeBaseRouting"]
-  ): void {
-    this.messageRuntime.updateMessageKnowledgeBaseRouting(conversationId, messageId, knowledgeBaseRouting);
+    return this.messageRuntime.appendUserMessage(conversationId, text, attachments);
   }
 
   updateMessageAgentAction(

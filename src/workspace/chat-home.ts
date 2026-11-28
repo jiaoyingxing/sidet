@@ -3,10 +3,8 @@ import { renderComposerChip } from "./chat-attachment-rendering";
 import type { WorkspaceController } from "./workspace-controller";
 
 export type ChatHomeCapabilityId =
-  | "knowledge-base"
   | "web-clipping"
-  | "web-search"
-  | "wiki-card";
+  | "web-search";
 
 export interface ChatHomeCapability {
   id: ChatHomeCapabilityId;
@@ -27,10 +25,8 @@ export interface ChatHomeRenderResult {
 }
 
 export const CHAT_HOME_CAPABILITY_LABELS: Record<ChatHomeCapabilityId, string> = {
-  "knowledge-base": "知识库",
   "web-clipping": "网页剪藏",
-  "web-search": "联网搜索",
-  "wiki-card": "Wiki卡片"
+  "web-search": "联网搜索"
 };
 
 export function setChatHomeCapabilitySelected(

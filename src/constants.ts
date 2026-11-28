@@ -153,12 +153,7 @@ export const DEFAULT_MODEL_CONFIG: ModelConfigRecord = {
 };
 export const DEFAULT_EXPORT_FOLDER = "Sidet/chat";
 export const DEFAULT_AGENT_DRAFT_FOLDER = "Sidet/Drafts";
-export const DEFAULT_AGENT_MEMORY_FOLDER = "Sidet/Memory";
-export const DEFAULT_AGENT_WIKI_FOLDER = "Sidet/Wiki";
-export const DEFAULT_AGENT_SKILL_FOLDER = "Sidet/Skills";
 export const DEFAULT_WEB_CLIPPING_FOLDER = "Sidet/Web Clippings";
-export const ALL_KNOWLEDGE_BASES_SELECTION = "__sidet_all_knowledge_bases__";
-export const ALL_KNOWLEDGE_BASES_DISPLAY_NAME = "全部知识库";
 export const UNTITLED_CONVERSATION_TITLE = "新对话";
 export const STORAGE_DEBOUNCE_MS = 320;
 export const MAX_NOTE_CONTEXT_CHARS = 12000;
@@ -167,11 +162,6 @@ export const MAX_MARKDOWN_ATTACHMENT_CONTEXT_CHARS = 6000;
 export const MAX_AGENT_CONTEXT_CHARS = 10000;
 export const MAX_AGENT_ROUTER_CONTEXT_CHARS = 6000;
 export const MAX_AGENT_BUILT_IN_SKILLS = 3;
-export const MAX_AGENT_USER_SKILLS = 4;
-export const MAX_AGENT_WIKI_MEMORY_RESULTS = 3;
-export const MAX_AGENT_WIKI_MEMORY_EXCERPT_CHARS = 900;
-export const MAX_AGENT_WIKI_OUTLINE_ITEMS = 6;
-export const MAX_AGENT_WIKI_RELATED_LINKS = 8;
 
 // 首版护栏：只读工具的第一版上界，按真实命中率与上下文占用调整，不是永久参数。
 export const MAX_AGENT_TOOL_RESULT_CHARS = 4000;

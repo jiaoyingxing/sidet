@@ -81,37 +81,6 @@ export function openChatContextMenu(options: OpenChatContextMenuOptions): Inline
     activeMenu = showDesktopMenu(items, anchorEl, handleMenuClose);
   };
 
-  const openKnowledgeModeMenu = (): void => {
-    suppressNextCloseNotification = true;
-    window.setTimeout(() => {
-      if (didNotifyClose) {
-        return;
-      }
-      const knowledgeModeItems: InlineActionMenuItem[] = [
-        {
-          title: "Wiki（长期知识）",
-          icon: "sparkles",
-          onSelect: () => {
-            controller.openWikiMemoryPrompt(leaf);
-          }
-        },
-        {
-          title: "Skill（方法规则）",
-          icon: "brain",
-          onSelect: () => {
-            void controller.generateSkillFromCurrentConversation(leaf);
-          }
-        }
-      ];
-
-      if (Platform.isMobile || Platform.isPhone) {
-        openMenu(knowledgeModeItems);
-        return;
-      }
-      openDesktopItems(knowledgeModeItems);
-    }, 0);
-  };
-
   const primaryItems: InlineActionMenuItem[] = [
     {
       title: "引用 Markdown 笔记",
@@ -147,15 +116,6 @@ export function openChatContextMenu(options: OpenChatContextMenuOptions): Inline
       closeBeforeSelect: false,
       onSelect: onPickImageAttachment
     },
-    {
-      title: "整理到知识库",
-      icon: "sparkles",
-      sectionStart: true,
-      closeBeforeSelect: false,
-      onSelect: () => {
-        openKnowledgeModeMenu();
-      }
-    }
   ];
 
   if (Platform.isMobile || Platform.isPhone) {

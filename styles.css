@@ -1065,14 +1065,32 @@ body.is-floating-nav .sidet-chat-view {
   background: var(--background-secondary);
 }
 
-/* 安卓亮色：宿主 1.15 的 .is-mobile 把 --interactive-normal 压成灰头底色，灰头上的
-   宿主按钮底色就“看不出来”（2026-11-28 安卓 1.15.0 实测）。按 OpenPlug 的平台专用
-   写法：main.ts 以 Platform.isAndroidApp 给 body 挂 `.sidet-android`，只在这个类 +
-   亮色下把这一个按钮底色 token 换回宿主自己在手机弹框里的取值
+/* 亮色宿主 token 回指（2026-11-28 安卓 1.15.0 与 iPhone 实测同一根因）：宿主 1.15
+   的 `.is-mobile` 把 --interactive-normal 压成 --background-secondary，写入卡灰头上的
+   「手动修改」等普通按钮与灰头同色，只剩文字。按 OpenPlug 的平台专用写法：main.ts
+   以 Platform.isAndroidApp / isIosApp 给 body 挂 `.sidet-android` / `.sidet-ios`，
+   只在这个类 + 亮色下把这一个按钮底色 token 换回宿主自己在手机弹框里的取值
    `--background-modifier-hover`（宿主 `.is-phone .modal .modal:not(.mod-lg)` 同款）；
-   不写死颜色、不加描边，iOS / 桌面 / 深色不碰。 */
+   不写死颜色、不加描边，主色 / 破坏档 / 尺寸 / 圆角仍由宿主负责，桌面 / 深色不碰。
+   安卓与 iOS 各成一条、不并进 :is()：老安卓 WebView（Chromium < 88）不识 :is()
+   会整条丢弃（OpenPlug 20261024 同判据）。 */
 body.sidet-android:not(.theme-dark) .sidet-chat-view {
   --interactive-normal: var(--background-modifier-hover);
+}
+
+body.sidet-ios:not(.theme-dark) .sidet-chat-view {
+  --interactive-normal: var(--background-modifier-hover);
+}
+
+/* 回指用的 --background-modifier-hover 是半透明黑（亮色 6.7%），只有在灰面上才
+   复合成中性灰；错误卡是淡红底，同一层会透出红色，把普通按钮染成粉灰。
+   错误卡内恢复宿主手机默认的不透明 --background-secondary；灰头写入卡继续回指。 */
+body.sidet-android:not(.theme-dark) .sidet-chat-view .sidet-answer-error {
+  --interactive-normal: var(--background-secondary);
+}
+
+body.sidet-ios:not(.theme-dark) .sidet-chat-view .sidet-answer-error {
+  --interactive-normal: var(--background-secondary);
 }
 
 .sidet-agent-inline-action.is-expanded .sidet-agent-action-head {
@@ -1219,8 +1237,19 @@ body.sidet-android:not(.theme-dark) .sidet-chat-view {
   color: var(--color-red);
 }
 
+/* 手机卡头第一行的改动量；桌面仍用操作行里的 delta，节点按平台各显一个。 */
+.sidet-agent-action-head-delta {
+  display: none;
+}
+
 .sidet-agent-action-spacer {
   flex: 1 1 auto;
+}
+
+.sidet-agent-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .sidet-agent-action-content {
@@ -1349,68 +1378,116 @@ body.sidet-android:not(.theme-dark) .sidet-chat-view {
   max-height: 220px;
 }
 
-@media (max-width: 520px) {
-  .sidet-agent-action-action-row {
-    align-items: stretch;
-  }
-
-  .sidet-agent-action-delta {
-    flex: 1 1 100%;
-  }
-
-  .sidet-agent-action-spacer {
-    display: none;
-  }
-
-  .sidet-agent-inline-action .sidet-agent-action-primary,
-  .sidet-agent-inline-action .sidet-agent-action-secondary {
-    flex: 1 1 0;
-    min-width: 0;
-  }
-
-  .sidet-agent-action-diff,
-  .sidet-agent-action-preview {
-    max-height: 220px;
-  }
+/* 手机写入卡卡头：第一行标题 / 改动量 / 折叠箭头，第二行路径 + 状态章。
+   路径左对齐且只占一行；文件夹过长先省略，文件名尽量保留。
+   状态句子（写入失败 / 已写入提示）不挤第一行，落到路径行下方整行。 */
+.is-phone-layout .sidet-agent-action-head-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "title delta chevron"
+    "target target target";
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: center;
 }
 
-.sidet-wiki-plan-followup {
-  margin-top: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 12px;
-  background: var(--background-secondary);
+.is-phone-layout .sidet-agent-action-title {
+  grid-area: title;
 }
 
-.sidet-wiki-plan-followup-header {
+.is-phone-layout .sidet-agent-action-head-delta {
+  display: block;
+  grid-area: delta;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.is-phone-layout .sidet-agent-action-head-delta.is-error {
+  grid-row: 3;
+  grid-column: 1 / -1;
+  white-space: normal;
+  overflow: visible;
+}
+
+.is-phone-layout .sidet-agent-action-chevron {
+  grid-area: chevron;
+  justify-self: end;
+  margin-left: 0;
+}
+
+.is-phone-layout .sidet-agent-action-target {
+  grid-area: target;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
 }
 
-.sidet-wiki-plan-followup-title {
-  color: var(--text-normal);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.sidet-wiki-plan-followup-status {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.sidet-wiki-plan-followup-note {
-  margin-top: 6px;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.sidet-wiki-plan-followup-actions {
+.is-phone-layout .sidet-agent-action-head-row .sidet-agent-action-path {
+  flex: 0 1 auto;
   display: flex;
-  justify-content: flex-end;
-  margin-top: 10px;
+  align-items: baseline;
+  justify-content: flex-start;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.is-phone-layout .sidet-agent-action-head-row .sidet-agent-action-path-folder {
+  flex: 0 4 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.is-phone-layout .sidet-agent-action-head-row .sidet-agent-action-path-file {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 手机操作行只放按钮：改动量与状态句子已在卡头，按钮等宽占满整行。 */
+.is-phone-layout .sidet-agent-action-action-row {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-top: 6px;
+}
+
+.is-phone-layout .sidet-agent-action-action-row > .sidet-agent-action-delta {
+  display: none;
+}
+
+.is-phone-layout .sidet-agent-action-spacer {
+  display: none;
+}
+
+.is-phone-layout .sidet-agent-action-buttons {
+  flex: 1 1 100%;
+  gap: 8px;
+  min-width: 0;
+}
+
+.is-phone-layout .sidet-agent-action-buttons > button {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* 手机消息流内嵌卡片的紧凑按钮：宿主手机按钮是 44px / --font-ui-small，
+   放进消息卡后体量过大。只收写入卡与错误卡的文字按钮；composer、操作排图标、
+   弹窗、菜单和桌面继续用宿主原尺寸，不新增第二套自绘按钮。 */
+body.is-mobile .sidet-chat-view.is-phone-layout .sidet-agent-inline-action .sidet-agent-action-primary,
+body.is-mobile .sidet-chat-view.is-phone-layout .sidet-agent-inline-action .sidet-agent-action-secondary,
+body.is-mobile .sidet-chat-view.is-phone-layout .sidet-answer-error-actions > button {
+  height: 36px;
+  padding: 0 var(--size-4-3);
+  font-size: var(--font-ui-smaller);
 }
 
 .sidet-message-attachments {
@@ -1418,80 +1495,6 @@ body.sidet-android:not(.theme-dark) .sidet-chat-view {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
-}
-
-.sidet-message-routing-hint {
-  margin-top: 6px;
-  padding: 2px 0 0;
-  border: 0;
-  background: transparent;
-}
-
-.sidet-message-routing-hint-note {
-  margin-top: 4px;
-  color: var(--text-faint);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.sidet-message-routing-hits {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  margin-top: 6px;
-}
-
-.sidet-message-routing-hits > button.sidet-message-routing-hit {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  min-width: 0;
-  max-width: 100%;
-  padding: 4px 6px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  box-shadow: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.35;
-  text-align: left;
-}
-
-.sidet-message-routing-hits > button.sidet-message-routing-hit:hover,
-.sidet-message-routing-hits > button.sidet-message-routing-hit:focus-visible {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
-}
-
-.sidet-message-routing-hits > button.sidet-message-routing-hit:focus-visible {
-  outline: 2px solid var(--interactive-accent);
-  outline-offset: 1px;
-}
-
-.sidet-message-routing-hit-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 12px;
-  height: 12px;
-}
-
-.sidet-message-routing-hit-icon svg {
-  width: 12px;
-  height: 12px;
-}
-
-.sidet-message-routing-hit-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .sidet-message-image {
@@ -1958,10 +1961,8 @@ body.sidet-android:not(.theme-dark) .sidet-chat-view {
   height: 38px;
   padding: 0;
   border: 1px solid var(--background-modifier-border);
-  border-color: color-mix(in srgb, var(--background-modifier-border) 82%, transparent);
   border-radius: 999px;
   background: var(--background-primary);
-  background: color-mix(in srgb, var(--background-primary) 96%, var(--background-secondary) 4%);
   color: var(--text-muted);
   box-shadow: var(--shadow-s);
   display: inline-flex;
@@ -2020,26 +2021,29 @@ body.sidet-android:not(.theme-dark) .sidet-chat-view {
   border-radius: 999px;
 }
 
-/* 宿主 button:not(.clickable-icon) 会接管底色与 --input-shadow；这里按设计值显式接管回来。 */
+/* 宿主 button:not(.clickable-icon)（0,1,1）比基类（0,1,0）高，会接管底色、--input-shadow
+   和 color（手机壳 --text-normal 是纯黑）。这里按设计值显式接管回来：底色直接用
+   --background-primary；图标走 --text-muted；描边直接用宿主 border token。
+   回到底部不要写 color-mix：真机上生效的 mix 会被算成初始值
+   （background → transparent、border-color → currentColor），表现为圆钮透明 / 黑边。 */
 .sidet-chat-view button.sidet-scroll-bottom-button {
   background: var(--background-primary);
-  background: color-mix(in srgb, var(--background-primary) 96%, var(--background-secondary) 4%);
+  color: var(--text-muted);
+  border-color: var(--background-modifier-border);
   box-shadow: var(--shadow-s);
 }
 
-/* 安卓亮色：回到底部与灰卡 / 白底贴在一起时，原来的近白填充读不出“有底”
-   （2026-11-28 安卓 1.15.0 实测）。按同一平台专用写法把填充换成宿主手机端的
-   不透明中性 `--interactive-hover`；不写死颜色、不加描边，iOS / 桌面 / 深色不碰。 */
-body.sidet-android:not(.theme-dark) .sidet-chat-view button.sidet-scroll-bottom-button {
-  background: var(--interactive-hover);
-}
-
 /* 旧 WebView 兜底（照 Resojot callout 2026-11-23 的写法）：宿主 1.15 的手机按钮、
-   列表 chip、悬停底全都建立在 color-mix(in oklch, …) 上；旧安卓 WebView 不支持时
-   整层作废，按钮和 chip 一起透明。门内按宿主同一语义在手机端恢复
+   列表 chip、悬停底全都建立在 color-mix(in oklch, …) 上；旧 WebView 不支持时
+   整层作废，按钮和 chip 一起透明。门内按宿主同一语义恢复
    --background-modifier-hover / active-hover 与 --interactive-normal / hover
-   （亮色黑 6.7%，深色白 10%；破坏档 error-rgb 10%）；回到底部另用不透明 border
-   色，避免半透明 scrim 让背后文字透出。新引擎不进门，继续走宿主精确值。 */
+   （亮色黑 6.7%，深色白 10%；破坏档 error-rgb 10%）。新引擎不进门，继续走宿主精确值。
+
+   这是**引擎能力兜底**，不是平台补丁：谁的 WebView 不支持 color-mix(in oklch)
+   谁就需要它，所以范围是 body.is-mobile（桌面不碰），安卓 / iOS 都适用。
+   按钮与底纹同色是宿主 1.15 把 --interactive-normal 压成 --background-secondary
+   造成的（2026-11-28 iPhone 截图实测），不是这段兜底；平台侧的 token 回指见上方
+   .sidet-android / .sidet-ios 两条，不要把两者混成一条。 */
 @supports not (background: color-mix(in oklch, red 50%, transparent)) {
   body.is-mobile.theme-light {
     --background-modifier-hover: rgba(var(--mono-rgb-100, 0, 0, 0), 0.067);
@@ -2057,10 +2061,6 @@ body.sidet-android:not(.theme-dark) .sidet-chat-view button.sidet-scroll-bottom-
 
   body.is-mobile button.mod-destructive:not(.mod-cta) {
     background-color: rgba(var(--background-modifier-error-rgb, 233, 49, 71), 0.1);
-  }
-
-  body.sidet-android:not(.theme-dark) .sidet-chat-view button.sidet-scroll-bottom-button {
-    background: var(--background-modifier-border);
   }
 }
 
@@ -2384,155 +2384,6 @@ body.is-mobile .sidet-inline-menu {
   padding-top: 14px;
 }
 
-.sidet-wiki-intake-header {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.sidet-wiki-intake-lead {
-  color: var(--text-muted);
-  font-size: 13px;
-  line-height: 1.65;
-}
-
-.sidet-wiki-intake-source,
-.sidet-wiki-intake-what {
-  margin-top: 14px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--background-secondary) 82%, transparent);
-}
-
-.sidet-wiki-intake-source {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 13px 14px;
-}
-
-.sidet-wiki-intake-source-top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.sidet-wiki-intake-source-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  color: var(--text-muted);
-}
-
-.sidet-wiki-intake-source-icon svg {
-  width: 16px;
-  height: 16px;
-}
-
-.sidet-wiki-intake-source-kicker {
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.sidet-wiki-intake-source-title {
-  color: var(--text-normal);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.45;
-}
-
-.sidet-wiki-intake-source-meta {
-  color: var(--text-faint);
-  font-size: 12px;
-  line-height: 1.55;
-  word-break: break-word;
-}
-
-.sidet-wiki-intake-what {
-  padding: 12px 14px 13px;
-}
-
-.sidet-wiki-intake-what-title {
-  color: var(--text-normal);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.sidet-wiki-intake-what-list {
-  margin: 8px 0 0;
-  padding-left: 18px;
-  color: var(--text-muted);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.sidet-wiki-intake-what-item + .sidet-wiki-intake-what-item {
-  margin-top: 4px;
-}
-
-.sidet-wiki-intake-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 16px;
-}
-
-.sidet-wiki-intake-field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.sidet-wiki-intake-field-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.sidet-wiki-intake-label {
-  color: var(--text-normal);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.sidet-wiki-intake-optional {
-  color: var(--text-faint);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.sidet-wiki-intake-help {
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.sidet-wiki-intake-input {
-  width: 100%;
-  min-height: 144px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 12px;
-  background: var(--background-primary);
-  color: var(--text-normal);
-  padding: 12px 13px;
-  font-family: var(--font-interface);
-  font-size: 14px;
-  line-height: 1.65;
-  resize: vertical;
-}
-
-.sidet-wiki-intake-input:focus {
-  outline: none;
-  border-color: var(--interactive-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 16%, transparent);
-}
-
 .sidet-rename-modal-body {
   display: flex;
   flex-direction: column;
@@ -2737,14 +2588,6 @@ body.is-mobile .sidet-inline-menu {
   font-size: 12px;
   line-height: 1.55;
   resize: vertical;
-}
-
-@media (max-width: 700px) {
-  .sidet-wiki-intake-source,
-  .sidet-wiki-intake-what {
-    padding-left: 12px;
-    padding-right: 12px;
-  }
 }
 
 .sidet-webpage-preview-modal {

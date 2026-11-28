@@ -75,37 +75,6 @@ export class ChatViewDraftRuntime {
       return false;
     }
 
-    if (
-      !editingState
-      && this.options.controller.tryHandleConversationKnowledgeCommandFromChat(
-        this.options.leaf,
-        draft,
-        attachments,
-        {
-          onSubmitStart: () => {
-            this.options.closeInlineSuggests();
-            this.options.queueScrollIntent("after-send");
-            this.setLocalDraft("", {
-              syncController: true,
-              suppressEchoToOrigin: false,
-              immediatePersistence: true
-            });
-            this.options.clearDraftAttachments();
-          },
-          onSubmitError: () => {
-            this.options.clearPendingScrollIntent();
-            this.setLocalDraft(draft, {
-              syncController: true,
-              suppressEchoToOrigin: false,
-              immediatePersistence: true
-            });
-          }
-        }
-      )
-    ) {
-      return true;
-    }
-
     try {
       this.options.closeInlineSuggests();
       this.options.queueScrollIntent("after-send");
@@ -118,7 +87,6 @@ export class ChatViewDraftRuntime {
       await this.options.controller.sendMessageFromLeaf(this.options.leaf, draft, attachments, {
         requestContextPrefix: this.options.getRequestContextPrefix?.() ?? null,
         replaceFromMessageId: editingState?.messageId ?? null,
-        selectedKnowledgeBaseIndexPathOverride: editingState?.originalKnowledgeBaseIndexPath,
         webSearchEnabledOverride: editingState?.originalWebSearchEnabled,
         onReplacementCommit: () => {
           commitEditingReplacementUi();

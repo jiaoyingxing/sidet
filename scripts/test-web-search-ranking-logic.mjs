@@ -120,7 +120,7 @@ function assertRelevanceRanking(ranking) {
 }
 
 function assertMultiQueryBoost(ranking) {
-  const shared = createResult("Shared", "shared");
+  const shared = createResult("Shared", "shared", "docs.example.com", "query-a query-b");
   const results = ranking.mergeRankedSearchBatches([
     {
       query: "alpha",
@@ -173,8 +173,118 @@ function assertFreshnessBoost(ranking) {
   assert.equal(results[0]?.title, "2026年11月23日 发布", "fresh results should outrank older results for freshness queries");
 }
 
+function assertPublishedAtFreshness(ranking) {
+  const now = new Date(2026, 10, 24, 12, 0, 0);
+  const results = ranking.mergeRankedSearchBatches([
+    {
+      query: "最新 发布",
+      results: [
+        createResult("没有日期的旧文章", "old"),
+        {
+          ...createResult("带 RSS 日期的文章", "new"),
+          publishedAt: "2026-11-23"
+        }
+      ]
+    }
+  ], { now });
+
+  assert.equal(
+    results[0]?.title,
+    "带 RSS 日期的文章",
+    "RSS/搜索结果的发布日期应参与时效排序"
+  );
+}
+
+function assertQueryCoverage(ranking) {
+  const weather = createResult(
+    "汉阴天气预报15天_汉阴天气预报",
+    "w",
+    "weather.com.cn",
+    "汉阴今天晴，最高气温18℃"
+  );
+  assert.equal(
+    ranking.passesQueryCoverage(weather, "汉阴县 天气预报 陕西省"),
+    true,
+    "真实命中应通过覆盖率闸门"
+  );
+
+  const govOverview = createResult(
+    "汉阴概况-汉阴县人民政府",
+    "gov",
+    "hanyin.gov.cn",
+    "陕西省安康市汉阴县"
+  );
+  assert.equal(
+    ranking.passesQueryCoverage(govOverview, "汉阴县 天气预报 陕西省"),
+    false,
+    "只提到地名不能冒充天气答案"
+  );
+
+  const calendar = createResult("2026年11月日历", "c", "rili.com.cn", "2026年11月日历查询");
+  assert.equal(
+    ranking.passesQueryCoverage(calendar, "2026年11月中国十大新闻"),
+    false,
+    "日期页不应被当成新闻结果"
+  );
+
+  const currency = createResult("人民币汇率中间价", "f", "safe.gov.cn", "人民币 美元 汇率 中间价");
+  assert.equal(
+    ranking.passesQueryCoverage(currency, "人民币 美元 汇率 中间价"),
+    true,
+    "官方汇率页应保留"
+  );
+
+  const dictionary = createResult("best - Cambridge Dictionary", "d", "dictionary.cambridge.org", "best meaning");
+  assert.equal(
+    ranking.passesQueryCoverage(dictionary, "open source note taking app comparison"),
+    false,
+    "词典页不应被当成英文查询结果"
+  );
+
+  const settings = createResult("Obsidian 设置项 搜索", "s", "docs.obsidian.md", "Obsidian 设置 搜索");
+  assert.equal(
+    ranking.passesQueryCoverage(settings, "Obsidian 插件 设置 全局搜索"),
+    true,
+    "覆盖部分查询词的文档页应保留"
+  );
+
+  const githubDaily = createResult("GitHubDaily 开源技术教程", "g", "github.com", "分享开源项目");
+  assert.equal(
+    ranking.passesQueryCoverage(githubDaily, "开源笔记软件 推荐 对比"),
+    false,
+    "只命中“开源”一个泛词不应算覆盖笔记软件"
+  );
+}
+
+function assertNearDuplicateTitleDedupe(ranking) {
+  const results = ranking.mergeRankedSearchBatches([
+    {
+      query: "汉阴 天气",
+      results: [
+        createResult("汉阴今天晴 最高气温18℃ - 中国天气网", "a", "weather.com.cn"),
+        createResult("汉阴今天晴 最高气温18℃ - 天气网", "b", "tianqi.com"),
+        createResult("汉阴天气预报", "c", "weather.com.cn"),
+        createResult("新闻", "d", "site-a.com"),
+        createResult("新闻", "e", "site-b.com")
+      ]
+    }
+  ], { now: new Date(2026, 10, 24, 12, 0, 0) });
+
+  const titles = results.map((item) => item.title);
+  assert.equal(
+    titles.filter((title) => title.startsWith("汉阴今天晴")).length,
+    1,
+    "同一标题的转载结果只应保留一条"
+  );
+  assert.equal(
+    titles.filter((title) => title === "新闻").length,
+    2,
+    "过短的通用标题不应被误判为重复"
+  );
+}
+
 async function assertSearchManyMergesQueries(serviceModule) {
-  const shared = createResult("Shared", "shared");
+  const shared = createResult("Shared", "shared", "docs.example.com", "query-a query-b");
   const progressMessages = [];
   const service = new serviceModule.WebSearchService({
     getProviders: () => [
@@ -186,9 +296,9 @@ async function assertSearchManyMergesQueries(serviceModule) {
             throw new Error("boom");
           }
           if (query === "query-a") {
-            return [shared, createResult("A1", "a1")];
+            return [shared, createResult("A1", "a1", "docs.example.com", "query-a A1")];
           }
-          return [shared, createResult("B1", "b1")];
+          return [shared, createResult("B1", "b1", "docs.example.com", "query-b B1")];
         }
       }
     ]
@@ -226,6 +336,32 @@ async function assertSearchManyMergesQueries(serviceModule) {
   );
 }
 
+
+function assertSourceQualityRanking(ranking) {
+  const downloadIntent = ranking.mergeRankedSearchBatches([
+    {
+      query: "天气 app 下载",
+      results: [createResult("天气App下载", "app", "pc6.com", "下载安装")]
+    }
+  ]);
+  assert.equal(
+    downloadIntent[0]?.title,
+    "天气App下载",
+    "an explicit download query should not penalize app stores"
+  );
+
+  const docs = ranking.mergeRankedSearchBatches([
+    {
+      query: "Node.js 文档",
+      results: [
+        createResult("Node.js 文档博客", "blog", "example.com"),
+        createResult("Node.js 文档", "docs", "nodejs.org")
+      ]
+    }
+  ]);
+  assert.equal(docs[0]?.title, "Node.js 文档", "official docs should outrank a generic blog");
+}
+
 async function main() {
   try {
     const ranking = await loadBundledModule("src/context/web-search-ranking.ts", "sidet-web-search-ranking");
@@ -237,6 +373,10 @@ async function main() {
     assertMultiQueryBoost(ranking);
     assertHostDiversity(ranking);
     assertFreshnessBoost(ranking);
+    assertPublishedAtFreshness(ranking);
+    assertQueryCoverage(ranking);
+    assertNearDuplicateTitleDedupe(ranking);
+    assertSourceQualityRanking(ranking);
     await assertSearchManyMergesQueries(serviceModule);
 
     console.log("web search ranking logic test passed");

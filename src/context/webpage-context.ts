@@ -76,6 +76,8 @@ const WEIXIN_CONTENT_SELECTOR = "#js_content";
 const WEBPAGE_ATTACHMENT_CACHE_TTL_MS = 15 * 60 * 1000;
 const WEBPAGE_ATTACHMENT_CACHE_MAX_ENTRIES = 24;
 const WEBPAGE_REQUEST_TIMEOUT_MS = 15_000;
+/** 显式联网研究读页的超时；比普通网页附件更短，避免单页拖住整轮研究。 */
+export const WEBPAGE_RESEARCH_REQUEST_TIMEOUT_MS = 8_000;
 const WEBPAGE_MAX_RESPONSE_CHARS = 1_000_000;
 const WEBPAGE_MAX_CONTENT_CHARS = 24_000;
 
@@ -572,7 +574,10 @@ export class WebpageContextService {
     });
   }
 
-  async buildWebpageAttachment(rawUrl: string): Promise<WebpageMessageAttachment> {
+  async buildWebpageAttachment(
+    rawUrl: string,
+    options: { timeoutMs?: number } = {}
+  ): Promise<WebpageMessageAttachment> {
     const normalizedUrl = normalizeUrl(rawUrl);
     const now = Date.now();
     this.pruneAttachmentCache(now);
@@ -601,7 +606,7 @@ export class WebpageContextService {
             "User-Agent": runtimeNavigator.userAgent
           }
         }),
-        this.options.requestTimeoutMs ?? WEBPAGE_REQUEST_TIMEOUT_MS
+        options.timeoutMs ?? this.options.requestTimeoutMs ?? WEBPAGE_REQUEST_TIMEOUT_MS
       );
       responseText = response.text;
     } catch (error) {

@@ -187,12 +187,12 @@ function assertHomeRendersReusableCapabilitiesAndLabeledLaunchers(module) {
   const result = module.renderChatHome(root, controller, {
     capabilities: [
       {
-        id: "knowledge-base",
-        label: "知识库",
-        icon: "layers",
+        id: "web-clipping",
+        label: "网页剪藏",
+        icon: "clipboard",
         selected: false,
         onSelect: () => {
-          selectedCapability = "knowledge-base";
+          selectedCapability = "web-clipping";
         }
       },
       {
@@ -212,7 +212,7 @@ function assertHomeRendersReusableCapabilitiesAndLabeledLaunchers(module) {
     result.capabilityRowEl.classList.contains("sidet-home-capability-row")
   );
   assert.equal(result.capabilityEls.size, 2);
-  assert.equal(result.capabilityEls.get("knowledge-base").hidden, false);
+  assert.equal(result.capabilityEls.get("web-clipping").hidden, false);
   assert.equal(result.capabilityEls.get("web-search").hidden, false);
   assert.equal(
     result.capabilityEls.get("web-search").classList.contains("is-home-capability-selected"),
@@ -226,42 +226,42 @@ function assertHomeRendersReusableCapabilitiesAndLabeledLaunchers(module) {
     "a selected home capability must announce the cancel action"
   );
   assert.equal(
-    result.capabilityEls.get("knowledge-base").attributes.get("aria-label"),
-    "选择知识库",
+    result.capabilityEls.get("web-clipping").attributes.get("aria-label"),
+    "选择网页剪藏",
     "an unselected home capability must announce the select action"
   );
   module.setChatHomeCapabilitySelected(
-    result.capabilityEls.get("knowledge-base"),
+    result.capabilityEls.get("web-clipping"),
     true,
-    "知识库"
+    "网页剪藏"
   );
   assert.equal(
-    result.capabilityEls.get("knowledge-base").attributes.get("aria-label"),
-    "取消知识库",
+    result.capabilityEls.get("web-clipping").attributes.get("aria-label"),
+    "取消网页剪藏",
     "the home capability label must follow the live selected state"
   );
   module.setChatHomeCapabilitySelected(
-    result.capabilityEls.get("knowledge-base"),
+    result.capabilityEls.get("web-clipping"),
     false,
     "知识库"
   );
   assert.equal(
-    result.capabilityEls.get("knowledge-base").attributes.get("aria-label"),
+    result.capabilityEls.get("web-clipping").attributes.get("aria-label"),
     "选择知识库",
     "the home capability label must return to the select action when cleared"
   );
   assert.ok(
-    result.capabilityEls.get("knowledge-base").classList.contains("sidet-composer-attachment-chip"),
+    result.capabilityEls.get("web-clipping").classList.contains("sidet-composer-attachment-chip"),
     "home capabilities must reuse the composer chip surface"
   );
   assert.equal(
-    result.capabilityEls.get("knowledge-base").findByClass("sidet-composer-attachment-remove").length,
+    result.capabilityEls.get("web-clipping").findByClass("sidet-composer-attachment-remove").length,
     0,
     "home capability candidates must not render a remove control"
   );
 
-  result.capabilityEls.get("knowledge-base").dispatch("click");
-  assert.equal(selectedCapability, "knowledge-base");
+  result.capabilityEls.get("web-clipping").dispatch("click");
+  assert.equal(selectedCapability, "web-clipping");
 
   const commandLabels = root.findByClass("sidet-home-command-label");
   assert.deepEqual(commandLabels.map((element) => element.textContent), ["书签"]);
@@ -361,18 +361,8 @@ function assertSingleComposerHomeStateProtection() {
   );
   assert.match(
     buildHomeCapabilitiesSource,
-    /if \(this\.isHomeCapabilitySelected\("knowledge-base"\)\) \{\s*this\.controller\.setSelectedKnowledgeBase\(this\.leaf, null\);/,
-    "clicking a selected knowledge-base chip must clear the mode"
-  );
-  assert.match(
-    buildHomeCapabilitiesSource,
     /if \(this\.isHomeCapabilitySelected\("web-search"\)\) \{\s*this\.controller\.setWebSearchEnabled\(this\.leaf, false\);/,
     "clicking a selected web-search chip must disable the mode"
-  );
-  assert.match(
-    buildHomeCapabilitiesSource,
-    /if \(this\.isHomeCapabilitySelected\("wiki-card"\)\) \{\s*this\.setHomeWikiCardSelected\(false\);/,
-    "clicking a selected wiki-card chip must clear the home-only selection"
   );
   assert.match(
     buildHomeCapabilitiesSource,

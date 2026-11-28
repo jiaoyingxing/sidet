@@ -16,7 +16,6 @@ import {
   type AgentActionDiff
 } from "../agent/actions/agent-action-diff";
 import { parseSidetToolActionPreview } from "../agent/actions/agent-tool-protocol";
-import { formatFileDatePrefix } from "../shared/time";
 import type { ConversationRecord, MessageRecord } from "../types";
 import {
   AgentActionPreviewModal,
@@ -47,6 +46,7 @@ interface AgentActionCardElements {
   chipEl: HTMLElement;
   chevronButtonEl: HTMLButtonElement;
   deltaEl: HTMLElement;
+  headDeltaEl: HTMLElement;
   primaryButtonEl: HTMLButtonElement;
   secondaryButtonEl: HTMLButtonElement;
   contentEl: HTMLElement;
@@ -103,8 +103,7 @@ export class AgentActionCard {
   render(parentEl: HTMLElement, conversation: ConversationRecord, message: MessageRecord): void {
     const preview = parseSidetToolActionPreview(
       message.text,
-      `AI 请求的文件动作 · ${conversation.title || "未命名对话"}`,
-      { updatedAt: formatFileDatePrefix(message.createdAt) }
+      `AI 请求的文件动作 · ${conversation.title || "未命名对话"}`
     );
     if (!preview) {
       return;
@@ -202,6 +201,10 @@ export class AgentActionCard {
       cls: "sidet-agent-action-title",
       text: this.getActionTitle(state.preview.kind)
     });
+    // 手机第一行显示改动量（桌面仍用操作行里的 delta）；两个节点按平台各显一个。
+    const headDeltaEl = headRowEl.createSpan({
+      cls: "sidet-agent-action-delta sidet-agent-action-head-delta"
+    });
 
     const targetEl = headRowEl.createSpan({ cls: "sidet-agent-action-target" });
     const pathButtonEl = targetEl.createEl("button", {
@@ -251,11 +254,13 @@ export class AgentActionCard {
     const deltaEl = actionRowEl.createSpan({ cls: "sidet-agent-action-delta" });
     const spacerEl = actionRowEl.createSpan({ cls: "sidet-agent-action-spacer" });
     spacerEl.setAttr("aria-hidden", "true");
-    const primaryButtonEl = new ButtonComponent(actionRowEl)
+    // 两颗按钮成组：手机上作为整体换行，不会在数字 / 状态文字旁边一颗一颗散开。
+    const buttonsEl = actionRowEl.createDiv({ cls: "sidet-agent-action-buttons" });
+    const primaryButtonEl = new ButtonComponent(buttonsEl)
       .setButtonText("")
       .buttonEl;
     primaryButtonEl.addClass("sidet-agent-action-primary");
-    const secondaryButtonEl = new ButtonComponent(actionRowEl)
+    const secondaryButtonEl = new ButtonComponent(buttonsEl)
       .setButtonText("")
       .buttonEl;
     secondaryButtonEl.addClass("sidet-agent-action-secondary");
@@ -278,6 +283,7 @@ export class AgentActionCard {
       chipEl,
       chevronButtonEl,
       deltaEl,
+      headDeltaEl,
       primaryButtonEl,
       secondaryButtonEl,
       contentEl,
@@ -368,63 +374,67 @@ export class AgentActionCard {
   }
 
   private syncDelta(state: AgentActionCardState): void {
-    const els = state.els;
-    els.deltaEl.empty();
-    els.deltaEl.classList.remove("is-error");
+    this.renderDelta(state.els.deltaEl, state);
+    this.renderDelta(state.els.headDeltaEl, state);
+  }
+
+  private renderDelta(deltaEl: HTMLElement, state: AgentActionCardState): void {
+    deltaEl.empty();
+    deltaEl.classList.remove("is-error");
 
     if (state.status === "written" && state.message) {
-      els.deltaEl.setText(state.message);
-      els.deltaEl.classList.add("is-error");
-      els.deltaEl.hidden = false;
+      deltaEl.setText(state.message);
+      deltaEl.classList.add("is-error");
+      deltaEl.hidden = false;
       return;
     }
     if (state.status === "error" || state.status === "undoing") {
-      els.deltaEl.setText(state.message);
-      els.deltaEl.classList.add("is-error");
-      els.deltaEl.hidden = !state.message;
+      deltaEl.setText(state.message);
+      deltaEl.classList.add("is-error");
+      deltaEl.hidden = !state.message;
       return;
     }
     if (state.status === "written") {
-      els.deltaEl.hidden = true;
+      deltaEl.hidden = true;
       return;
     }
     if (state.status === "conflict" && !state.stats) {
-      els.deltaEl.hidden = true;
+      deltaEl.hidden = true;
       return;
     }
     if (!state.stats) {
-      els.deltaEl.setText(state.hydrating ? "读取中…" : "");
-      els.deltaEl.hidden = !state.hydrating;
+      deltaEl.setText(state.hydrating ? "读取中…" : "");
+      deltaEl.hidden = !state.hydrating;
       return;
     }
     if (state.stats.truncated) {
-      els.deltaEl.setText("改动较多");
-      els.deltaEl.hidden = false;
+      deltaEl.setText("改动较多");
+      deltaEl.hidden = false;
       return;
     }
     const added = state.stats.added;
     const removed = state.stats.removed;
     if (added === 0 && removed === 0) {
-      els.deltaEl.setText("±0");
-      els.deltaEl.hidden = false;
+      deltaEl.setText("±0");
+      deltaEl.hidden = false;
       return;
     }
     if (added > 0) {
-      els.deltaEl.createSpan({
+      deltaEl.createSpan({
         cls: "sidet-agent-action-delta-add",
         text: `+${added}`
       });
     }
     if (removed > 0) {
       if (added > 0) {
-        els.deltaEl.appendText(" ");
+        deltaEl.appendText(" ");
       }
-      els.deltaEl.createSpan({
+      deltaEl.createSpan({
         cls: "sidet-agent-action-delta-del",
         text: `−${removed}`
       });
     }
-    els.deltaEl.hidden = false;
+    deltaEl.hidden = false;
   }
 
   private syncButtons(state: AgentActionCardState): void {

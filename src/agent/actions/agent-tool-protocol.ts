@@ -1,5 +1,4 @@
 import { normalizeAgentActionTargetPath, type AgentActionPreview } from "./agent-action";
-import { buildNormalizedWikiMarkdownFromPath, isWikiNotePath } from "../wiki/wiki-note-schema";
 import {
   buildSidetFileToolContext as buildSidetFileToolPrompt,
   buildSidetFileToolSummaryContext as buildSidetFileToolSummaryPrompt
@@ -110,8 +109,7 @@ export function buildSidetFileToolSummaryContext(): string {
 
 export function parseSidetToolActionPreview(
   markdown: string,
-  sourceLabel: string,
-  options: { updatedAt?: string } = {}
+  sourceLabel: string
 ): AgentActionPreview | null {
   const action = parseSidetToolAction(markdown);
   if (!action) {
@@ -124,20 +122,12 @@ export function parseSidetToolActionPreview(
   if (!normalizedTargetPath) {
     return null;
   }
-  const normalizedContent = (isCreate || isReplace) && isWikiNotePath(normalizedTargetPath)
-    ? buildNormalizedWikiMarkdownFromPath(normalizedTargetPath, action.content, {}, {
-      preserveUpdatedAt: false,
-      // 用消息创建时间而不是每次解析时的当前分钟：签名、卡片状态和持久化的
-      // agentAction 必须跨分钟稳定，否则重渲染会退回待确认并允许重复写入。
-      updatedAt: options.updatedAt
-    })
-    : action.content;
 
   return {
     kind: isCreate ? "create-note" : isReplace ? "replace-note" : "append-note",
     title: action.title || (isCreate ? "创建笔记" : isReplace ? "覆盖现有笔记" : "追加到笔记"),
     targetPath: normalizedTargetPath,
-    content: normalizedContent,
+    content: action.content,
     sourceLabel,
     riskNotes: [
       "这是 AI 在对话中请求的文件动作，只有确认后才会执行。",
@@ -168,7 +158,7 @@ function splitActionHeaderAndContent(rawBlock: string): {
     if (headerLines.length === 0) {
       continue;
     }
-    // 分隔线之前的非空行必须全部是 header 字段；正文里的水平线、Wiki YAML
+    // 分隔线之前的非空行必须全部是 header 字段；正文里的水平线
     // 或标题不会满足这个条件，避免从任意 `---` 兜底切分把正文截掉半段。
     if (!headerLines.every((line) => /^[A-Za-z][\w-]*\s*:\s*.*$/.test(line))) {
       continue;
@@ -241,10 +231,23 @@ function parseHeaderFields(headerText: string): Record<string, string> {
 }
 
 /**
+ * 动作块能否出卡片：卡片入口还要求目标路径可归一化，裁正文时用同一把尺子，
+ * 避免「正文裁掉了、卡片却没渲染」把整篇笔记静默吞掉。
+ */
+function isRenderableActionBlock(markdown: string): boolean {
+  const action = parseSidetToolAction(markdown);
+  return Boolean(action && normalizeAgentActionTargetPath(action.targetPath));
+}
+
+/**
  * 界面 / 复制 / 检索只保留动作块之前的说明文字。旧消息可能把“请确认 / 确认后
  * 我再创建”写在了动作块后面；卡片已经承载确认，这些尾巴不应再露给用户。
+ * 只裁能出卡片的动作块；解析失败时保留原文，内容至少还在。
  */
 export function stripSidetActionAndFollowing(markdown: string): string {
+  if (!isRenderableActionBlock(markdown)) {
+    return markdown.trim();
+  }
   const block = extractActionBlock(markdown);
   if (!block) {
     return markdown.trim();

@@ -38,6 +38,47 @@ const MAX_RELEVANCE_SCORE = 6;
 const FRESHNESS_INTENT_PATTERN =
   /最新|最近|今日|今天|昨天|本周|这周|本月|今年|刚刚|实时|新闻|快讯|发布|更新|上线|版本|价格|股价|比分|赛况|动态|进展/i;
 
+/**
+ * 站点质量只做“明显该排除 / 明显该优先”的粗判，不替代相关度。
+ *
+ * 搜索源是 Bing / 百度 / 搜狗的公开结果页，软件下载站和 App 介绍页在中文
+ * 查询里占位很重；官方 / 文档 / 代码站则值得先读。规则按查询意图生效：
+ * 用户明确要下载 App 时，不惩罚下载站。
+ */
+const DOWNLOAD_INTENT_PATTERN = /下载|安装|客户端|软件|app|apk|ipa|应用商店|应用市场/i;
+const DOWNLOAD_HOST_PATTERNS: RegExp[] = [
+  /(^|\.)pc6\.com$/,
+  /(^|\.)cr173\.com$/,
+  /(^|\.)ddooo\.com$/,
+  /(^|\.)duote\.com$/,
+  /(^|\.)onlinedown\.net$/,
+  /(^|\.)xiazaizhijia\.com$/,
+  /(^|\.)pcsoft\.com\.cn$/,
+  /(^|\.)mydown\.com$/,
+  /(^|\.)wandoujia\.com$/,
+  /(^|\.)appchina\.com$/,
+  /(^|\.)hiapk\.com$/,
+  /(^|\.)apkpure\.com$/,
+  /(^|\.)apkmirror\.com$/,
+  /(^|\.)softonic\.com$/,
+  /(^|\.)download\.com$/,
+  /(^|\.)filehippo\.com$/,
+  /(^|\.)majorgeeks\.com$/,
+  /(^|\.)app\.mi\.com$/,
+  /(^|\.)appgallery\.huawei\.com$/,
+  /(^|\.)apps\.apple\.com$/,
+  /(^|\.)play\.google\.com$/,
+  /^download\./
+];
+const DOWNLOAD_TEXT_PATTERN = /下载|安装包|客户端|官方版|免费版|破解版|绿色版|apk|ipa/i;
+const TECH_AUTHORITY_HOST_PATTERNS: RegExp[] = [
+  /(^|\.)github\.com$/,
+  /(^|\.)developer\.mozilla\.org$/,
+  /(^|\.)wikipedia\.org$/,
+  /(^|\.)docs\.python\.org$/,
+  /(^|\.)nodejs\.org$/
+];
+
 const TRACKING_QUERY_PARAMS = new Set([
   "fbclid",
   "gclid",
@@ -201,14 +242,17 @@ export function parseSearchResultDate(text: string, now: Date = new Date()): num
  * 时效加分只在搜索词明确要“新东西”时生效；普通知识型问题不按时效重排。
  */
 export function scoreSearchResultFreshness(
-  result: Pick<RankableWebSearchResult, "title" | "snippet">,
+  result: Pick<RankableWebSearchResult, "title" | "snippet"> & { publishedAt?: string },
   query: string,
   now: Date = new Date()
 ): number {
   if (!hasFreshnessIntent(query)) {
     return 0;
   }
-  const timestamp = parseSearchResultDate(`${result.title} ${result.snippet}`, now);
+  const timestamp = parseSearchResultDate(
+    `${result.publishedAt ?? ""} ${result.title} ${result.snippet}`,
+    now
+  );
   if (timestamp === null) {
     return 0;
   }
@@ -300,7 +344,122 @@ export function scoreSearchResultRelevance(
   return Math.min(MAX_RELEVANCE_SCORE, score);
 }
 
-function resolveResultHost(result: RankableWebSearchResult): string {
+/**
+ * 查询覆盖率闸门：结果必须在标题 / 摘要里真正覆盖查询的一部分。
+ *
+ * 搜索源在“没有结果”时经常返回别的热门页或词典页，而不是空列表；
+ * 只看非空会把整批无关结果当成证据。这里用查询里的英文词与中文二元片段
+ * 计覆盖率，低于阈值的结果不进入候选。
+ */
+const COVERAGE_STOPWORDS = new Set([
+  "the", "and", "for", "with", "from", "that", "this", "best", "top",
+  "new", "how", "what", "why", "latest", "about", "into", "your"
+]);
+/** 时间 / 程度类中文词不单独作为必中片段，否则“最近”“重大”会把正常结果挡掉。 */
+const COVERAGE_CJK_STOPWORDS = new Set([
+  "最近", "最新", "今日", "今天", "昨日", "昨天", "本周", "这周",
+  "本月", "今年", "目前", "重大", "重要", "相关", "热门", "全面"
+]);
+
+function collectCoverageRuns(query: string): string[][] {
+  const runs: string[][] = [];
+  for (const segment of query.toLowerCase().match(/[\u4e00-\u9fff]{2,}/g) ?? []) {
+    if (COVERAGE_CJK_STOPWORDS.has(segment)) {
+      continue;
+    }
+    if (segment.length === 2) {
+      runs.push([segment]);
+      continue;
+    }
+    const bigrams: string[] = [];
+    for (let index = 0; index < segment.length - 1; index += 1) {
+      bigrams.push(segment.slice(index, index + 2));
+    }
+    runs.push(bigrams);
+  }
+  return runs;
+}
+
+function collectCoverageLatinTerms(query: string): string[] {
+  const terms = new Set<string>();
+  for (const match of query.toLowerCase().matchAll(/[a-z][a-z0-9._+-]*/g)) {
+    const token = match[0];
+    if (token.length >= 2 && !COVERAGE_STOPWORDS.has(token)) {
+      terms.add(token);
+    }
+  }
+  return Array.from(terms);
+}
+
+/**
+ * 查询覆盖率闸门：结果必须在标题 / 摘要里真正覆盖查询的一部分。
+ *
+ * - 每个中文片段单独要求命中：地名页不能因为只提到地名就冒充“天气”答案；
+ * - 长片段至少命中两个二元片段，避免只命中“开源”一个泛词；
+ * - 英文词整体要求过半命中。
+ *
+ * 搜索源在“没有结果”时经常返回别的热门页或词典页，而不是空列表；
+ * 这里把“无关但非空”挡在候选之外。
+ */
+export function passesQueryCoverage(
+  result: Pick<RankableWebSearchResult, "title" | "snippet">,
+  query: string
+): boolean {
+  const text = `${result.title} ${result.snippet}`.toLowerCase();
+  const runs = collectCoverageRuns(query);
+  const latinTerms = collectCoverageLatinTerms(query);
+  if (runs.length === 0 && latinTerms.length === 0) {
+    return true;
+  }
+
+  if (runs.length > 0) {
+    const longestRunSize = Math.max(...runs.map((run) => run.length));
+    let matchedRuns = 0;
+    let longestRunMatched = false;
+
+    for (const run of runs) {
+      let matched = 0;
+      for (const term of run) {
+        if (text.includes(term)) {
+          matched += 1;
+        }
+      }
+      const required = run.length >= 5 ? 2 : 1;
+      if (matched < required) {
+        continue;
+      }
+      matchedRuns += 1;
+      if (run.length === longestRunSize) {
+        longestRunMatched = true;
+      }
+    }
+
+    // 两段查询要求两段都命中（如「地名 + 天气」）；更多段时至少过半，
+    // 且最长的一段必须命中，避免只命中泛词或地点。
+    const requiredRuns = runs.length === 1
+      ? 1
+      : Math.max(2, Math.ceil(runs.length / 2));
+    if (matchedRuns < requiredRuns || !longestRunMatched) {
+      return false;
+    }
+  }
+
+  if (latinTerms.length > 0) {
+    let matchedLatin = 0;
+    for (const term of latinTerms) {
+      if (containsLatinToken(text, term)) {
+        matchedLatin += 1;
+      }
+    }
+    if (matchedLatin < Math.max(1, Math.ceil(latinTerms.length / 2))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function resolveResultHost(result: Pick<RankableWebSearchResult, "host" | "url">): string {
   const normalizedHost = result.host?.trim().toLowerCase();
   if (normalizedHost) {
     return normalizedHost;
@@ -312,6 +471,67 @@ function resolveResultHost(result: RankableWebSearchResult): string {
   }
 }
 
+/**
+ * 站点质量分：没有下载意图时下载站降权，官方与文档站加权。
+ *
+ * 只影响同一批结果的先后，不改变返回数量；用户明确要下载 App 时不做降权。
+ */
+export function scoreSearchResultSourceQuality(
+  result: Pick<RankableWebSearchResult, "title" | "snippet" | "host" | "url">,
+  query: string
+): number {
+  const host = resolveResultHost(result).replace(/^www\./, "");
+  const text = `${result.title} ${result.snippet}`;
+  const wantsDownload = DOWNLOAD_INTENT_PATTERN.test(query);
+  let score = 0;
+
+  if (!wantsDownload) {
+    const isDownloadHost = DOWNLOAD_HOST_PATTERNS.some((pattern) => pattern.test(host));
+    if (isDownloadHost) {
+      score -= 4;
+    } else if (DOWNLOAD_TEXT_PATTERN.test(text)) {
+      score -= 1.5;
+    }
+  }
+
+  if (/(^|\.)gov\.cn$|(^|\.)edu\.cn$/.test(host)) {
+    score += 1.5;
+  }
+  if (TECH_AUTHORITY_HOST_PATTERNS.some((pattern) => pattern.test(host))) {
+    score += 1;
+  }
+
+  return score;
+}
+
+/**
+ * 标题去重键：去掉站点后缀、大小写、空白和标点。
+ *
+ * 同一篇报道常被多个站点用同一标题转载；不分来源地排在一起会挤掉
+ * 真正不同的信息。只对足够长的标题生效，避免“首页”“新闻”这类短标题误合并。
+ */
+function normalizeTitleKey(title: string): string {
+  const withoutSiteSuffix = title.split(/\s+[-|_–—]\s+/)[0] ?? title;
+  return withoutSiteSuffix
+    .toLowerCase()
+    .replace(/[\s\-_|–—·:：,，.。!！?？、;；()（）[\]【】"'“”]+/g, "")
+    .replace(/(?:官网|官方网站|首页)$/g, "");
+}
+
+const MIN_DUPLICATE_TITLE_KEY_LENGTH = 10;
+
+function isNearDuplicateTitle(title: string, seenTitleKeys: Set<string>): boolean {
+  const key = normalizeTitleKey(title);
+  if (key.length < MIN_DUPLICATE_TITLE_KEY_LENGTH) {
+    return false;
+  }
+  if (seenTitleKeys.has(key)) {
+    return true;
+  }
+  seenTitleKeys.add(key);
+  return false;
+}
+
 function selectWithHostDiversity<T extends RankableWebSearchResult>(
   entries: Array<{ result: T; score: number; order: number }>,
   maxResults: number,
@@ -320,8 +540,12 @@ function selectWithHostDiversity<T extends RankableWebSearchResult>(
   const selected: Array<{ result: T; score: number; order: number }> = [];
   const remaining: Array<{ result: T; score: number; order: number }> = [];
   const hostCounts = new Map<string, number>();
+  const titleKeys = new Set<string>();
 
   for (const entry of entries) {
+    if (isNearDuplicateTitle(entry.result.title, titleKeys)) {
+      continue;
+    }
     const host = resolveResultHost(entry.result);
     const count = hostCounts.get(host) ?? 0;
     if (count < perHostLimit) {
@@ -366,7 +590,8 @@ export function mergeRankedSearchBatches<T extends RankableWebSearchResult>(
       const rankScore = 1 / (rank + 1);
       const score = rankScore
         + scoreSearchResultRelevance(result, query)
-        + scoreSearchResultFreshness(result, query, now);
+        + scoreSearchResultFreshness(result, query, now)
+        + scoreSearchResultSourceQuality(result, query);
       const existing = merged.get(key);
       if (existing) {
         existing.score += score;

@@ -6,7 +6,6 @@ import {
   Platform,
   Plugin,
   TFile,
-  TFolder,
   WorkspaceLeaf
 } from "obsidian";
 import {
@@ -33,7 +32,6 @@ import { ArchivedConversationsModal } from "./settings/archived-conversations-mo
 import type { DialogPluginSettings, DialogRuntimeState } from "./types";
 import { BrowserView } from "./workspace/browser-view";
 import { ChatView } from "./workspace/chat-view";
-import { MarkdownFolderPickerModal } from "./workspace/markdown-folder-picker-modal";
 import { WorkspaceController } from "./workspace/workspace-controller";
 import {
   IOS_KEYBOARD_PHASE_DIAGNOSTIC_BUILD,
@@ -57,6 +55,8 @@ const SIDET_STAR_FILLED_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" view
 
 /** Android-only body class for the host 1.15 mobile button-token fix (styles.css). */
 const SIDET_ANDROID_CLASS = "sidet-android";
+/** iOS-only body class for the same host 1.15 mobile button-token fix (styles.css). */
+const SIDET_IOS_CLASS = "sidet-ios";
 
 export default class SidetPlugin extends Plugin {
   override settings: DialogPluginSettings = DEFAULT_SETTINGS;
@@ -109,6 +109,9 @@ export default class SidetPlugin extends Plugin {
   override async onload(): Promise<void> {
     if (Platform.isAndroidApp && typeof document !== "undefined") {
       document.body.classList.add(SIDET_ANDROID_CLASS);
+    }
+    if (Platform.isIosApp && typeof document !== "undefined") {
+      document.body.classList.add(SIDET_IOS_CLASS);
     }
     this.registerSidetIcons();
     const rawData: unknown = await this.loadData();
@@ -243,47 +246,6 @@ export default class SidetPlugin extends Plugin {
       }
     });
 
-    this.addCommand({
-      id: "create-knowledge-base-index-for-folder",
-      name: "将文件夹设为知识库",
-      icon: "folder-plus",
-      callback: () => {
-        const modal = new MarkdownFolderPickerModal(
-          this.app,
-          (folder) => {
-            void this.controller.createKnowledgeBaseIndexForFolder(folder);
-          },
-          undefined,
-          {
-            placeholder: "搜索要设为知识库的文件夹",
-            includeRoot: true
-          }
-        );
-        modal.open();
-      }
-    });
-
-    this.addCommand({
-      id: "generate-wiki-memory-from-current-sidet-conversation",
-      name: "整理当前内容到知识库",
-      icon: "sparkles",
-      checkCallback: (checking) => {
-        const conversationLeaf = this.getActiveConversationLeaf();
-        const markdownFile = conversationLeaf ? null : this.getActiveMarkdownFile();
-        if (!conversationLeaf && !markdownFile) {
-          return false;
-        }
-        if (!checking) {
-          if (conversationLeaf) {
-            this.controller.openWikiMemoryPrompt(conversationLeaf);
-          } else if (markdownFile) {
-            this.controller.openWikiMemoryPromptForMarkdownFile(markdownFile);
-          }
-        }
-        return true;
-      }
-    });
-
     // 排障命令：不属于 8 条公共产品命令，仅用于移动输入真机取证。
     this.addCommand({
       id: "export-mobile-input-diagnostic",
@@ -302,34 +264,6 @@ export default class SidetPlugin extends Plugin {
       this.handleIosInputDiagnosticUri
     );
 
-    this.registerEvent(
-      this.app.workspace.on("file-menu", (menu, file) => {
-        if (file instanceof TFolder) {
-          menu.addItem((item) => {
-            item
-              .setTitle("将文件夹设为知识库")
-              .setIcon("folder-plus")
-              .onClick(() => {
-                void this.controller.createKnowledgeBaseIndexForFolder(file);
-              });
-          });
-          return;
-        }
-
-        if (!(file instanceof TFile) || file.extension !== "md") {
-          return;
-        }
-        menu.addItem((item) => {
-          item
-            .setTitle("整理到知识库")
-            .setIcon("sparkles")
-            .onClick(() => {
-              this.controller.openWikiMemoryPromptForMarkdownFile(file);
-            });
-        });
-      })
-    );
-
     this.disposeNativeNewTabTakeover = this.controller.installNativeNewTabTakeover();
     this.register(() => {
       this.disposeNativeNewTabTakeover?.();
@@ -346,12 +280,6 @@ export default class SidetPlugin extends Plugin {
         this.controller.handleLayoutChange();
       })
     );
-    this.registerEvent(
-      this.app.metadataCache.on("resolved", () => {
-        this.controller.primeKnowledgeBasesFromMetadataCache();
-      })
-    );
-
     this.app.workspace.onLayoutReady(() => {
       this.controller.handleLayoutReady();
       this.scheduleDeferredBrowserBootstrap();
@@ -369,6 +297,7 @@ export default class SidetPlugin extends Plugin {
   override onunload(): void {
     if (typeof document !== "undefined") {
       document.body.classList.remove(SIDET_ANDROID_CLASS);
+      document.body.classList.remove(SIDET_IOS_CLASS);
     }
     void this.runUnloadTasks().catch((error) => {
       console.error("Sidet：卸载时清理失败", error);
@@ -400,9 +329,7 @@ export default class SidetPlugin extends Plugin {
     new ArchivedConversationsModal(this.app, this.controller).open();
   }
 
-  async repairSidetWikiNotes(): Promise<void> {
-    await this.controller.repairMalformedWikiNotes();
-  }
+
 
   private getActiveConversationLeaf(): WorkspaceLeaf | null {
     const leaf = this.app.workspace.activeLeaf;

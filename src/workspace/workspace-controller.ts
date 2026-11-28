@@ -1,7 +1,5 @@
-import { App, Notice, TFile, TFolder, WorkspaceLeaf } from "obsidian";
+import { App, Notice, TFile, WorkspaceLeaf } from "obsidian";
 import {
-  ALL_KNOWLEDGE_BASES_DISPLAY_NAME,
-  ALL_KNOWLEDGE_BASES_SELECTION,
   CHAT_VIEW_ICON,
   CHAT_VIEW_TYPE,
   MAX_AGENT_TOOL_RESULT_CHARS,
@@ -20,7 +18,7 @@ import {
   WebSearchService,
   type WebSearchResult
 } from "../context/web-search-service";
-import { WebpageContextService } from "../context/webpage-context";
+import { WebpageContextService, WEBPAGE_RESEARCH_REQUEST_TIMEOUT_MS } from "../context/webpage-context";
 import { AgentActionPreviewService } from "../agent/actions/agent-action-preview";
 import { runAgentToolLoop } from "../agent/tools/agent-tool-loop";
 import { resolveAgentToolDefinitions } from "../agent/tools/tool-registry";
@@ -39,7 +37,10 @@ import {
   joinSidetRequestContexts,
   resolveSidetFileToolPromptMode
 } from "../agent/prompts/base-request-context";
-import { pickVisibleProcessNote } from "../agent/web-search/web-search-runtime-policy";
+import {
+  buildResearchAttemptSummary,
+  pickVisibleProcessNote
+} from "../agent/web-search/web-search-runtime-policy";
 import { createDisplayableAnswerStreamer } from "../agent/web-search/displayable-answer-stream";
 import {
   buildSidetResearchDecisionContext,
@@ -55,6 +56,7 @@ import {
 } from "../agent/web-search/sidet-protocol";
 import {
   createResearchBudget,
+  FAST_RESEARCH_EVIDENCE_CHARS,
   runWebResearchRound,
   type ResearchBudget,
   type ResearchPage,
@@ -67,7 +69,6 @@ import {
   type ResearchLoopState
 } from "../agent/web-search/research-loop";
 import { VaultAgentService } from "../agent/vault-agent";
-import type { WikiKnowledgeBaseInfo } from "../agent/wiki/wiki-memory-index";
 import { MarkdownExportService } from "../export/markdown-export";
 import {
   ConversationSession,
@@ -97,12 +98,7 @@ import { WorkspaceLeafNavigation } from "./workspace-leaf-navigation";
 import { WorkspaceConversationActions } from "./workspace-conversation-actions";
 import { WorkspaceNativeNewTabTakeover } from "./workspace-native-new-tab-takeover";
 import { WorkspaceNewTabEmptyStateEnhancer } from "./new-tab-empty-state-enhancer";
-import {
-  applyKnowledgeBaseSelection,
-  applyWebSearchEnabled,
-  resolveSelectedKnowledgeBaseState as resolveKnowledgeBaseSelection,
-  type SelectedKnowledgeBaseState
-} from "./chat-leaf-mode-rules";
+import { applyWebSearchEnabled } from "./chat-leaf-mode-rules";
 import {
   resolveConversationModelDisplayName as resolveModelDisplayName,
   resolveDefaultModelConfigId as resolveDefaultModelId,
@@ -110,7 +106,6 @@ import {
   resolveReconciledConversationModelConfigId,
   resolveReconciledLeafModelConfigId
 } from "./model-selection-rules";
-import type { WikiMemoryPromptOptions } from "./wiki-memory-prompt-modal";
 import type {
   ChatLeafState,
   ChatLeafViewState,
@@ -155,12 +150,10 @@ interface SendMessageFromLeafOptions {
   replaceFromMessageId?: string | null;
   /** 重新生成时保留旧回答：旧消息 id 作为新回答的一个历史版本。 */
   variantOfMessageId?: string | null;
-  selectedKnowledgeBaseIndexPathOverride?: string | null;
   webSearchEnabledOverride?: boolean;
   onReplacementCommit?: (() => void) | null;
 }
 
-export type { SelectedKnowledgeBaseState } from "./chat-leaf-mode-rules";
 
 export interface HomePinnedCommandInfo {
   commandId: string;
@@ -243,8 +236,7 @@ export class WorkspaceController {
     this.nativeNewTabTakeover = new WorkspaceNativeNewTabTakeover(app, this.leafNavigation);
     this.newTabEmptyStateEnhancer = new WorkspaceNewTabEmptyStateEnhancer(app, this.leafNavigation);
     this.vaultToolService = new VaultToolService({
-      app,
-      queryWikiMemory: (query) => this.vaultAgent.searchWikiMemory(query)
+      app
     });
     this.conversationActions = new WorkspaceConversationActions({
       controller: this,
@@ -258,7 +250,6 @@ export class WorkspaceController {
       ensureConversationStoreReady: () => this.ensureConversationStoreReady(),
       sendMessageFromLeaf: (leaf, text, attachments = [], options) => this.sendMessageFromLeaf(leaf, text, attachments, options),
       getSettings: () => this.getSettings(),
-      resolveFreshKnowledgeConversationLeaf: (targetLeaf) => this.resolveFreshKnowledgeConversationLeaf(targetLeaf)
     });
   }
 
@@ -298,32 +289,6 @@ export class WorkspaceController {
     return this.chatLeafRuntime.getLeafViewState(leaf);
   }
 
-  getAvailableKnowledgeBases(): WikiKnowledgeBaseInfo[] {
-    return this.vaultAgent.findKnowledgeBases();
-  }
-
-  primeKnowledgeBasesFromMetadataCache(): WikiKnowledgeBaseInfo[] {
-    const changed = this.vaultAgent.primeKnowledgeBasesFromMetadataCache();
-    const selectionChanged = this.reconcileKnowledgeBaseSelections();
-    if (changed || selectionChanged) {
-      this.workspaceListeners.emit();
-    }
-    return this.getAvailableKnowledgeBases();
-  }
-
-  async refreshKnowledgeBases(): Promise<WikiKnowledgeBaseInfo[]> {
-    const changed = await this.vaultAgent.refreshKnowledgeBases();
-    const selectionChanged = changed ? this.reconcileKnowledgeBaseSelections() : false;
-    if (changed || selectionChanged) {
-      this.workspaceListeners.emit();
-    }
-    return this.getAvailableKnowledgeBases();
-  }
-
-  getSelectedKnowledgeBaseState(leaf: WorkspaceLeaf): SelectedKnowledgeBaseState {
-    return this.resolveSelectedKnowledgeBaseState(this.getChatLeafState(leaf).knowledgeBaseIndexPath);
-  }
-
   isWebSearchEnabled(leaf: WorkspaceLeaf): boolean {
     return this.getChatLeafState(leaf).webSearchEnabled === true;
   }
@@ -334,20 +299,6 @@ export class WorkspaceController {
    */
   private isAutoWebSearchEnabled(): boolean {
     return this.getSettings().webSearchMode === "auto";
-  }
-
-  private resolveSelectedKnowledgeBaseState(knowledgeBaseIndexPath: string | null | undefined): SelectedKnowledgeBaseState {
-    return resolveKnowledgeBaseSelection(
-      knowledgeBaseIndexPath,
-      (indexPath) => this.vaultAgent.findKnowledgeBaseByIndexPath(indexPath)
-    );
-  }
-
-  setSelectedKnowledgeBase(leaf: WorkspaceLeaf, indexPath: string | null): void {
-    const nextState = applyKnowledgeBaseSelection(this.getChatLeafState(leaf), indexPath);
-    this.chatLeafRuntime.updateChatLeafState(leaf, nextState, {
-      immediatePersistence: true
-    });
   }
 
   setWebSearchEnabled(leaf: WorkspaceLeaf, enabled: boolean): void {
@@ -779,47 +730,9 @@ export class WorkspaceController {
       activate: true,
       focusComposer: false
     });
-    const selectedKnowledgeBaseState = options.selectedKnowledgeBaseIndexPathOverride === undefined
-      ? this.getSelectedKnowledgeBaseState(leaf)
-      : this.resolveSelectedKnowledgeBaseState(options.selectedKnowledgeBaseIndexPathOverride);
-    if (selectedKnowledgeBaseState.mode !== "none") {
-      const pendingKnowledgeBaseRouting: MessageRecord["knowledgeBaseRouting"] = {
-        mode: selectedKnowledgeBaseState.mode,
-        displayName: selectedKnowledgeBaseState.displayName ?? ALL_KNOWLEDGE_BASES_DISPLAY_NAME,
-        status: "searching",
-        resultCount: 0,
-        hits: []
-      };
-      if (options.replaceFromMessageId) {
-        await this.stopStreamingAndWait();
-      }
-      await this.session.sendLocalAssistantReply(
-        conversationId,
-        trimmed,
-        async () => {
-          const localSearchReply = await this.vaultAgent.buildKnowledgeBaseSearchReply(
-            trimmed,
-            attachments,
-            selectedKnowledgeBaseState
-          );
-          return {
-            assistantText: localSearchReply?.responseMarkdown ?? "当前无法生成知识库检索结果。",
-            knowledgeBaseRouting: localSearchReply?.knowledgeBaseRouting
-          };
-        },
-        attachments,
-        {
-          replaceFromMessageId: options.replaceFromMessageId,
-          knowledgeBaseRouting: pendingKnowledgeBaseRouting,
-          onReplacementCommit: options.onReplacementCommit
-        }
-      );
-      return;
-    }
     const preSendContext = await this.buildPreSendAgentContext(
       trimmed,
       attachments,
-      selectedKnowledgeBaseState,
       options.requestContextPrefix ?? null
     );
     const extraRequestContext = options.requestContextPrefix?.trim();
@@ -896,7 +809,6 @@ export class WorkspaceController {
         replaceFromMessageId: options.replaceFromMessageId,
         variantOfMessageId: options.variantOfMessageId,
         requestContextChars: requestContext?.length ?? 0,
-        knowledgeBaseRouting: preSendContext.knowledgeBaseRouting,
         onReplacementCommit: options.onReplacementCommit
       }
     );
@@ -931,65 +843,6 @@ export class WorkspaceController {
     await this.draftIntake.insertMarkdownFileIntoDraft(file, targetLeaf);
   }
 
-  async createKnowledgeBaseIndexForFolder(folder: TFolder): Promise<void> {
-    try {
-      const { path, created } = await this.vaultAgent.createKnowledgeBaseIndexForFolder(folder);
-      await this.refreshKnowledgeBases().catch((error) => {
-        console.warn("Sidet：创建知识库根页后刷新识别失败。", error);
-      });
-      new Notice(created ? `已创建知识库根页：${path}` : `知识库根页已存在：${path}`, 4000);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "创建知识库根页失败。";
-      new Notice(message, 4000);
-    }
-  }
-
-  async insertMemoryCandidatePromptIntoDraft(targetLeaf?: WorkspaceLeaf): Promise<void> {
-    await this.draftIntake.insertMemoryCandidatePromptIntoDraft(targetLeaf);
-  }
-
-  openWikiMemoryPrompt(targetLeaf?: WorkspaceLeaf, options: WikiMemoryPromptOptions = {}): void {
-    this.conversationActions.openWikiMemoryPrompt(targetLeaf, options);
-  }
-
-  openWikiMemoryPromptForMarkdownFile(
-    file: TFile,
-    targetLeaf?: WorkspaceLeaf,
-    options: WikiMemoryPromptOptions = {}
-  ): void {
-    this.conversationActions.openWikiMemoryPromptForMarkdownFile(file, targetLeaf, options);
-  }
-
-  tryHandleConversationKnowledgeCommandFromChat(
-    leaf: WorkspaceLeaf,
-    text: string,
-    attachments: MessageAttachment[],
-    options: WikiMemoryPromptOptions = {}
-  ): boolean {
-    return this.conversationActions.tryHandleConversationKnowledgeCommandFromChat(leaf, text, attachments, options);
-  }
-
-  async generateWikiMaintenancePlanFromConversation(
-    leaf: WorkspaceLeaf,
-    userBoundary?: string
-  ): Promise<void> {
-    await this.conversationActions.generateWikiMaintenancePlanFromConversation(leaf, userBoundary);
-  }
-
-  async generateWikiMaintenancePlanFromCurrentNote(
-    targetLeaf?: WorkspaceLeaf,
-    userBoundary?: string
-  ): Promise<void> {
-    await this.conversationActions.generateWikiMaintenancePlanFromCurrentNote(targetLeaf, userBoundary);
-  }
-
-  async generateWikiMaintenancePlanFromMarkdownFile(
-    file: TFile,
-    targetLeaf?: WorkspaceLeaf,
-    userBoundary?: string
-  ): Promise<void> {
-    await this.conversationActions.generateWikiMaintenancePlanFromMarkdownFile(file, targetLeaf, userBoundary);
-  }
 
   /**
    * 重新生成最后一条回答：复用最后一条用户消息和附件，替换旧的一轮。
@@ -1032,21 +885,13 @@ export class WorkspaceController {
     await this.store.selectAnswerVariant(conversationId, messageId, index);
   }
 
-  async continueLatestWikiMaintenancePlan(targetLeaf?: WorkspaceLeaf): Promise<boolean> {
-    return this.conversationActions.continueLatestWikiMaintenancePlan(targetLeaf);
-  }
 
-  async repairMalformedWikiNotes(): Promise<void> {
-    await this.conversationActions.repairMalformedWikiNotes();
-  }
 
-  async generateSkillFromConversation(leaf: WorkspaceLeaf): Promise<void> {
-    await this.conversationActions.generateSkillFromConversation(leaf);
-  }
 
-  async generateSkillFromCurrentConversation(targetLeaf?: WorkspaceLeaf): Promise<void> {
-    await this.conversationActions.generateSkillFromCurrentConversation(targetLeaf);
-  }
+
+
+
+
 
   async insertDraftNotePreviewPromptIntoDraft(targetLeaf?: WorkspaceLeaf): Promise<void> {
     await this.draftIntake.insertDraftNotePreviewPromptIntoDraft(targetLeaf);
@@ -1056,17 +901,11 @@ export class WorkspaceController {
     await this.conversationActions.openCreateDraftNotePreview(targetLeaf);
   }
 
-  async openCreateMemoryCandidatePreview(targetLeaf?: WorkspaceLeaf): Promise<void> {
-    await this.conversationActions.openCreateMemoryCandidatePreview(targetLeaf);
-  }
 
-  async openCreateWikiMemoryPreview(targetLeaf?: WorkspaceLeaf): Promise<void> {
-    await this.conversationActions.openCreateWikiMemoryPreview(targetLeaf);
-  }
 
-  async openCreateSkillPreview(targetLeaf?: WorkspaceLeaf): Promise<void> {
-    await this.conversationActions.openCreateSkillPreview(targetLeaf);
-  }
+
+
+
 
   async openCreateWebpageClipPreview(attachment: WebpageMessageAttachment): Promise<void> {
     await this.conversationActions.openCreateWebpageClipPreview(attachment);
@@ -1088,8 +927,11 @@ export class WorkspaceController {
     return this.conversationActions.buildMarkdownFileAttachment(file);
   }
 
-  async buildWebpageAttachment(url: string): Promise<WebpageMessageAttachment> {
-    return this.conversationActions.buildWebpageAttachment(url);
+  async buildWebpageAttachment(
+    url: string,
+    options?: { timeoutMs?: number }
+  ): Promise<WebpageMessageAttachment> {
+    return this.conversationActions.buildWebpageAttachment(url, options);
   }
 
   async exportConversationForLeaf(leaf: WorkspaceLeaf): Promise<void> {
@@ -1190,19 +1032,13 @@ export class WorkspaceController {
     await this.store.ensureLoaded();
   }
 
-  private async resolveFreshKnowledgeConversationLeaf(targetLeaf?: WorkspaceLeaf): Promise<WorkspaceLeaf> {
-    return this.leafNavigation.resolveFreshKnowledgeConversationLeaf(targetLeaf);
-  }
+
 
   private async buildPreSendAgentContext(
     text: string,
     attachments: MessageAttachment[],
-    selectedKnowledgeBase: SelectedKnowledgeBaseState | WikiKnowledgeBaseInfo | null = null,
     requestContextPrefix: string | null = null
-  ): Promise<{
-    requestContext: string | null;
-    knowledgeBaseRouting: MessageRecord["knowledgeBaseRouting"];
-  }> {
+  ): Promise<{ requestContext: string | null }> {
     const timeContext = buildSidetCurrentDateContext();
     const toolPromptMode = resolveSidetFileToolPromptMode({
       text,
@@ -1215,16 +1051,14 @@ export class WorkspaceController {
         ? buildSidetFileToolSummaryContext()
         : null;
     try {
-      const routerContext = await this.vaultAgent.buildPreSendAgentContext(text, attachments, selectedKnowledgeBase);
+      const routerContext = await this.vaultAgent.buildPreSendAgentContext(text, attachments);
       return {
-        requestContext: joinSidetRequestContexts(timeContext, routerContext.requestContext, toolContext),
-        knowledgeBaseRouting: routerContext.knowledgeBaseRouting ?? undefined
+        requestContext: joinSidetRequestContexts(timeContext, routerContext.requestContext, toolContext)
       };
     } catch (error) {
       console.warn("Sidet：发送前上下文路由失败，已跳过自动上下文。", error);
       return {
-        requestContext: joinSidetRequestContexts(timeContext, toolContext),
-        knowledgeBaseRouting: undefined
+        requestContext: joinSidetRequestContexts(timeContext, toolContext)
       };
     }
   }
@@ -1241,7 +1075,8 @@ export class WorkspaceController {
       decisionContext: buildSidetResearchDecisionContext(),
       createMessage: (role, text) => this.createEphemeralMessage(role, text),
       callDecisionModel: (messages) => this.streamProtocolReply(runtime, messages, {
-        parseResearch: true
+        parseResearch: true,
+        streamVisibleContent: true
       }),
       callRepairModel: (messages) => this.streamProtocolReply(
         runtime,
@@ -1250,7 +1085,8 @@ export class WorkspaceController {
           ...messages
         ],
         {
-          parseResearch: true
+          parseResearch: true,
+          streamVisibleContent: true
         }
       ),
       runResearchRound: (round, question, budget, state, reason) => this.runResearchRound(
@@ -1260,7 +1096,8 @@ export class WorkspaceController {
         budget,
         state,
         runtime,
-        baseMessages
+        baseMessages,
+        { fastEvidence: true }
       ),
       streamFinalAnswer: (messages, state) => this.streamWebSearchFinalAnswer(runtime, messages, {
         originalQuery,
@@ -1275,12 +1112,13 @@ export class WorkspaceController {
         state.lastSearchResults
       ),
       signal: runtime.getAbortSignal(),
+      streamDecisionContent: true,
       now: Date.now
     });
   }
 
   /**
-   * 普通对话的工具执行路由：vault 四件直接进 `VaultToolService`，
+   * 普通对话的工具执行路由：vault 三件直接进 `VaultToolService`，
    * `web_research` 走同一消息内的联网上下文。联网工具是否在工具表里由
    * `resolveAgentToolDefinitions` 决定，这里不再做第二道开关。
    */
@@ -1342,8 +1180,10 @@ export class WorkspaceController {
     budget: ResearchBudget,
     state: ResearchLoopState,
     runtime: LocalAssistantTaskRuntime,
-    baseMessages: MessageRecord[]
+    baseMessages: MessageRecord[],
+    options: { fastEvidence?: boolean } = {}
   ): Promise<ResearchRoundResult> {
+    const fastFirstRound = options.fastEvidence === true && round === 1;
     const stepPanel = createWebStepPanel(
       `web-step-research-${round}`,
       round > 1 ? `研究 ${round}` : "研究"
@@ -1351,6 +1191,7 @@ export class WorkspaceController {
     this.appendProcessStepDetail(runtime, stepPanel, `研究问题：${question}`);
     this.appendProcessStepDetail(runtime, stepPanel, this.resolveProcessDetail(reason));
 
+    const previousAttempts = state.attempts;
     const result = await runWebResearchRound({
       round,
       question,
@@ -1358,12 +1199,13 @@ export class WorkspaceController {
       alreadyFetchedUrls: new Set(state.pages.map((page) => page.url)),
       sourceStart: state.pages.length + 1,
       signal: runtime.getAbortSignal(),
-      expandQueries: async (researchQuestion, maxQueries) => {
+      previousAttempts,
+      expandQueries: async (researchQuestion, maxQueries, attempts) => {
         const reply = await runtime.completeModelReply(
           [
             this.createEphemeralMessage(
               "system",
-              buildSidetResearchQueryContext(researchQuestion, new Date(), maxQueries)
+              buildSidetResearchQueryContext(researchQuestion, new Date(), maxQueries, attempts)
             ),
             ...baseMessages
           ],
@@ -1378,7 +1220,9 @@ export class WorkspaceController {
         onProgress: (event) => onProgress?.({ message: event.message })
       }),
       fetchPage: async (url) => {
-        const attachment = await this.buildWebpageAttachment(url);
+        const attachment = await this.buildWebpageAttachment(url, {
+          timeoutMs: WEBPAGE_RESEARCH_REQUEST_TIMEOUT_MS
+        });
         return {
           title: attachment.name,
           url: attachment.url,
@@ -1392,7 +1236,6 @@ export class WorkspaceController {
               "system",
               buildSidetResearchEvidenceContext(researchQuestion, maxChars)
             ),
-            ...baseMessages,
             this.createEphemeralMessage("user", evidenceInput)
           ],
           {
@@ -1401,6 +1244,8 @@ export class WorkspaceController {
         );
         return reply.contentText;
       },
+      evidenceCharLimit: fastFirstRound ? FAST_RESEARCH_EVIDENCE_CHARS : undefined,
+      skipCompressionWhenFits: fastFirstRound,
       onProgress: (event: ResearchRoundProgress) => {
         this.appendProcessStepDetail(runtime, stepPanel, event.message);
       },
@@ -1422,6 +1267,17 @@ export class WorkspaceController {
         note: item.snippet
       })));
     }
+
+    // 只保留最近几轮，避免长会话把早期失败方向一直带下去。
+    state.attempts = [
+      ...state.attempts,
+      buildResearchAttemptSummary(
+        question,
+        result.queries,
+        [...result.results, ...result.pages],
+        result.pages.length
+      )
+    ].slice(-6);
 
     return result;
   }
@@ -1556,24 +1412,48 @@ export class WorkspaceController {
     messages: MessageRecord[],
     options: {
       parseResearch?: boolean;
+      streamVisibleContent?: boolean;
     }
   ): Promise<{
     contentText: string;
     reasoningText: string;
+    visibleContentStreamed: boolean;
   }> {
+    let visibleContentStreamed = false;
+    const streamer = options.streamVisibleContent
+      ? createDisplayableAnswerStreamer(
+          (chunk) => {
+            visibleContentStreamed = true;
+            runtime.appendContent(chunk);
+          },
+          { holdResearchProtocolPreamble: options.parseResearch === true }
+        )
+      : null;
     const reply = await runtime.streamModelReply(messages, {
       webSearchMode: "off",
       onReasoningChunk: (chunk) => {
         runtime.appendReasoning(chunk);
       },
+      ...(streamer
+        ? {
+            onContentChunk: (
+              _chunk: string,
+              state: { contentText: string; reasoningText: string }
+            ) => {
+              streamer.sync(state.contentText);
+            }
+          }
+        : {}),
       shouldStop: ({ contentText }) => {
         return Boolean(options.parseResearch && parseSidetResearchBlock(contentText));
       }
     });
+    streamer?.finish(reply.contentText);
 
     return {
       contentText: reply.contentText,
-      reasoningText: reply.reasoningText
+      reasoningText: reply.reasoningText,
+      visibleContentStreamed
     };
   }
 
@@ -1682,23 +1562,7 @@ export class WorkspaceController {
     this.chatLeafRuntime.cleanupDetachedChatLeaves();
   }
 
-  private reconcileKnowledgeBaseSelections(): boolean {
-    let changed = false;
-    for (const leaf of this.leafNavigation.getChatLeaves()) {
-      const state = this.getChatLeafState(leaf);
-      if (!state.knowledgeBaseIndexPath || state.knowledgeBaseIndexPath === ALL_KNOWLEDGE_BASES_SELECTION) {
-        continue;
-      }
-      if (this.vaultAgent.findKnowledgeBaseByIndexPath(state.knowledgeBaseIndexPath)) {
-        continue;
-      }
-      this.chatLeafRuntime.setKnowledgeBaseIndexPath(leaf, null, {
-        immediatePersistence: true
-      });
-      changed = true;
-    }
-    return changed;
-  }
+
 
   private getCommandRegistry(): CommandRegistryLike | null {
     return getCommandRegistry(this.app);

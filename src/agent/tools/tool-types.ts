@@ -1,10 +1,8 @@
-import type { WikiKnowledgeMatch } from "../wiki/wiki-memory-index";
 
 export const AGENT_TOOL_NAMES = [
   "search_notes",
   "read_note",
   "note_links",
-  "wiki_memory",
   "web_research"
 ] as const;
 
@@ -27,5 +25,3 @@ export interface AgentToolExecutionResult {
 }
 
 export type AgentToolResultBlock = AgentToolExecutionResult;
-
-export type WikiMemoryQuery = (query: string) => Promise<WikiKnowledgeMatch[]>;

@@ -103,10 +103,7 @@ export class ConversationStoreMessageRuntime {
   async appendUserMessage(
     conversationId: string,
     text: string,
-    attachments: MessageRecord["attachments"] = [],
-    options: {
-      knowledgeBaseRouting?: MessageRecord["knowledgeBaseRouting"];
-    } = {}
+    attachments: MessageRecord["attachments"] = []
   ): Promise<MessageRecord> {
     const conversation = this.options.requireConversation(conversationId);
     const message: MessageRecord = {
@@ -115,8 +112,7 @@ export class ConversationStoreMessageRuntime {
       text,
       createdAt: now(),
       status: "done",
-      attachments: attachments.length > 0 ? attachments : undefined,
-      knowledgeBaseRouting: options.knowledgeBaseRouting ?? undefined
+      attachments: attachments.length > 0 ? attachments : undefined
     };
 
     conversation.messages.push(message);
@@ -127,19 +123,6 @@ export class ConversationStoreMessageRuntime {
     await this.options.saveImmediately(conversationId);
     this.options.emitStoreChange();
     return message;
-  }
-
-  updateMessageKnowledgeBaseRouting(
-    conversationId: string,
-    messageId: string,
-    knowledgeBaseRouting: MessageRecord["knowledgeBaseRouting"]
-  ): void {
-    const conversation = this.options.requireConversation(conversationId);
-    const message = this.options.requireMessage(conversation, messageId);
-    message.knowledgeBaseRouting = knowledgeBaseRouting ?? undefined;
-    conversation.updatedAt = now();
-    this.options.scheduleSave(conversationId);
-    this.options.emitStoreChange();
   }
 
   updateMessageAgentAction(

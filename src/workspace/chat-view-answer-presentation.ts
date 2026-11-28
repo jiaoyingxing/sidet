@@ -126,10 +126,6 @@ export function resolveRegenerateAnswerTarget(conversation: ConversationRecord):
   if (!userMessage) {
     throw new Error("没有找到可重新发送的用户消息。");
   }
-  if (userMessage.knowledgeBaseRouting) {
-    throw new Error("知识库检索结果暂不支持重新生成。");
-  }
-
   const keepPreviousAnswer = lastMessage.status === "done"
     || (lastMessage.answerVariants?.length ?? 0) > 0;
   return {

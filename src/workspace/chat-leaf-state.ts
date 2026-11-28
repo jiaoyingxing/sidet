@@ -3,14 +3,13 @@ import type { ChatLeafState } from "../types";
 
 export const CHAT_LEAF_EPHEMERAL_KEY = "sidetChatLeafState";
 
-export type ChatLeafModeState = Pick<ChatLeafState, "knowledgeBaseIndexPath" | "webSearchEnabled">;
+export type ChatLeafModeState = Pick<ChatLeafState, "webSearchEnabled">;
 
 export function createDefaultChatLeafState(): ChatLeafState {
   return {
     conversationId: null,
     draft: "",
     modelConfigId: null,
-    knowledgeBaseIndexPath: null,
     webSearchEnabled: false
   };
 }
@@ -18,9 +17,6 @@ export function createDefaultChatLeafState(): ChatLeafState {
 export function resolveChatLeafModeState(state: Partial<ChatLeafState> | null | undefined): ChatLeafModeState {
   const source = state ?? {};
   return {
-    knowledgeBaseIndexPath: typeof source.knowledgeBaseIndexPath === "string" && source.knowledgeBaseIndexPath.trim().length > 0
-      ? source.knowledgeBaseIndexPath.trim()
-      : null,
     webSearchEnabled: source.webSearchEnabled === true
   };
 }
@@ -66,9 +62,6 @@ export function normalizeChatLeafState(state: unknown): ChatLeafState {
     modelConfigId: typeof source.modelConfigId === "string" && source.modelConfigId.trim().length > 0
       ? source.modelConfigId.trim()
       : null,
-    knowledgeBaseIndexPath: typeof source.knowledgeBaseIndexPath === "string" && source.knowledgeBaseIndexPath.trim().length > 0
-      ? source.knowledgeBaseIndexPath.trim()
-      : null,
     webSearchEnabled: source.webSearchEnabled === true
   };
 }
@@ -77,7 +70,6 @@ export function areChatLeafStatesEqual(left: ChatLeafState, right: ChatLeafState
   return left.conversationId === right.conversationId
     && left.draft === right.draft
     && left.modelConfigId === right.modelConfigId
-    && left.knowledgeBaseIndexPath === right.knowledgeBaseIndexPath
     && left.webSearchEnabled === right.webSearchEnabled;
 }
 

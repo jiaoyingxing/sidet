@@ -2,6 +2,7 @@ import { MAX_AGENT_TOOL_ROUNDS } from "../../constants";
 import type { MessageRecord } from "../../types";
 import {
   buildAgentToolFinalAnswerContext,
+  buildAgentToolFinalAnswerRepairContext,
   buildAgentToolRepairContext,
   buildAgentToolSystemContext
 } from "../prompts/tool-loop-prompts";
@@ -164,7 +165,44 @@ export async function runAgentToolLoop(options: AgentToolLoopOptions): Promise<A
     if (invocation.aborted) {
       return buildLoopResult(true, false);
     }
-    if (!invocation.callVisibleText.trim()) {
+
+    // 真实模型会在“不能再调工具”的这一轮继续输出工具块；工具块被隐藏后
+    // 用户只剩一句“下面是我整理的内容”加半截围栏。补一次只输出正文的调用，
+    // 让用户拿到真正的最终回答。
+    const triedToolAgain = parseAgentToolInvocation(invocation.reply.contentText) !== null
+      || isAgentToolInvocationMalformed(invocation.reply.contentText);
+    let visibleText = invocation.callVisibleText;
+    if ((triedToolAgain || !visibleText.trim()) && !options.signal?.aborted) {
+      // 前一次已经流出说明句时先断开段落，避免修复正文接在句号后面。
+      if (visibleText.trim()) {
+        emitVisible("\n\n");
+      }
+      const repaired = await invokeModel([
+        options.createMessage(
+          "system",
+          buildAgentToolFinalAnswerRepairContext({ webResearch: webResearchEnabled })
+        ),
+        ...transcript,
+        options.createMessage(
+          "assistant",
+          invocation.reply.contentText.trim() || REPAIR_EMPTY_ASSISTANT_TEXT
+        ),
+        options.createMessage("user", "请直接给出给用户看的最终回答，不要再调用工具。")
+      ]);
+      if (repaired.aborted) {
+        return buildLoopResult(true, false);
+      }
+      visibleText = repaired.callVisibleText;
+      // 补正仍然只给工具块 / 空正文时明确告诉用户，而不是留下半句承诺。
+      const stillNoAnswer = parseAgentToolInvocation(repaired.reply.contentText) !== null
+        || isAgentToolInvocationMalformed(repaired.reply.contentText);
+      if (!visibleText.trim() || stillNoAnswer) {
+        emitVisible(`${visibleText.trim() ? "\n\n" : ""}${AGENT_TOOL_LOOP_FALLBACK_TEXT}`);
+      }
+      return buildLoopResult(false, exhausted);
+    }
+
+    if (!visibleText.trim()) {
       emitVisible(AGENT_TOOL_LOOP_FALLBACK_TEXT);
     }
     return buildLoopResult(false, exhausted);
@@ -433,7 +471,6 @@ function normalizeKeyPart(value: string | null): string | null {
 
 function buildToolStepSummary(invocation: AgentToolInvocation): string {
   const usesQuery = invocation.tool === "search_notes"
-    || invocation.tool === "wiki_memory"
     || invocation.tool === "web_research";
   const target = (usesQuery ? invocation.query : invocation.path)?.trim() ?? "";
   switch (invocation.tool) {
@@ -443,8 +480,6 @@ function buildToolStepSummary(invocation: AgentToolInvocation): string {
       return `读取笔记：${target}`;
     case "note_links":
       return `查询双链：${target}`;
-    case "wiki_memory":
-      return `查询 Wiki 记忆：${target}`;
     case "web_research":
       return `联网搜索：${target}`;
   }

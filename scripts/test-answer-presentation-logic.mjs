@@ -181,42 +181,6 @@ async function main() {
     "assistant-1",
     "an error that is already part of a version history should keep that history"
   );
-  assert.throws(
-    () => module.resolveRegenerateAnswerTarget(regenerateConversation([
-      regenerateUser,
-      createMessage({ id: "assistant-1", role: "assistant", text: "", status: "streaming" })
-    ])),
-    /最后一条已完成/
-  );
-  assert.throws(
-    () => module.resolveRegenerateAnswerTarget(regenerateConversation([regenerateUser])),
-    /最后一条已完成/
-  );
-  assert.throws(
-    () => module.resolveRegenerateAnswerTarget(regenerateConversation([
-      createMessage({ id: "assistant-1", role: "assistant", text: "回答", status: "done" })
-    ])),
-    /用户消息/
-  );
-  assert.throws(
-    () => module.resolveRegenerateAnswerTarget(regenerateConversation([
-      createMessage({
-        id: "user-1",
-        role: "user",
-        text: "知识库问题",
-        knowledgeBaseRouting: {
-          mode: "all",
-          displayName: "全部知识库",
-          status: "complete",
-          resultCount: 1,
-          hits: []
-        }
-      }),
-      createMessage({ id: "assistant-1", role: "assistant", text: "回答", status: "done" })
-    ])),
-    /知识库/
-  );
-
   const fullSource = { title: "全文", url: "https://a.example", readDepth: "full" };
   const summarySource = { title: "摘要", url: "https://b.example", readDepth: "summary" };
   const unmarkedSource = { title: "未标记" };

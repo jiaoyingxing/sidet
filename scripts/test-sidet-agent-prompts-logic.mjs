@@ -28,22 +28,6 @@ async function loadBundledModule(relativePath) {
   return import(`${pathToFileURL(outfile).href}?t=${Date.now()}`);
 }
 
-function assertWikiMaintenancePrompts(module) {
-  const executionContext = module.buildWikiExecutionDraftRequestContext();
-  assert.match(executionContext, /不要重写维护计划/);
-  assert.match(executionContext, /最多输出一个 sidet-action 块/);
-  assert.match(executionContext, /不要先问用户是否确认/);
-  assert.match(executionContext, /如果这次更适合只补 Index/);
-
-  const planPrompt = module.buildWikiMaintenancePlanPrompt([
-    "来源：本条消息之前的当前 Sidet 对话。",
-    "来源对话：测试对话"
-  ]);
-  assert.match(planPrompt, /你是 Sidet 的 Wiki 管家/);
-  assert.match(planPrompt, /第一阶段只在已识别知识库自己的根目录内判断和检索，不跨目录聚合/);
-  assert.match(planPrompt, /## 需要用户确认/);
-}
-
 function assertToolActionPrompts(module) {
   const fullContext = module.buildSidetFileToolContext();
   assert.match(fullContext, /直接输出 sidet-action；卡片本身就是确认入口/);
@@ -54,9 +38,9 @@ function assertToolActionPrompts(module) {
   assert.match(fullContext, /没有可靠来源就省略 sources/);
   assert.match(fullContext, /sidet-action 块必须是回复的最后内容/);
   assert.match(fullContext, /不要创建空模板、占位笔记或“待更新”笔记/);
-  assert.match(fullContext, /其余没有明确知识库意图的笔记.*默认用 Drafts/);
-  assert.match(fullContext, /路径不在 Sidet\/Wiki 下时.*不要写 YAML frontmatter/);
-  assert.match(fullContext, /上面的示例是 Drafts，故意不带 YAML/);
+  assert.match(fullContext, /默认路径：草稿 -> Sidet\/Drafts；网页剪藏 -> Sidet\/Web Clippings/);
+  assert.match(fullContext, /路径不在 Sidet\/Web Clippings 下时.*不要写 YAML frontmatter/);
+  assert.match(fullContext, /正文不带 YAML frontmatter/);
   assert.match(fullContext, /动作主题必须对应用户当前要求/);
   assert.match(fullContext, /外部网页用 \[标题\]\(URL\)/);
   assert.match(fullContext, /也不要建议创建空白笔记或模板/);
@@ -68,6 +52,11 @@ function assertToolActionPrompts(module) {
   assert.match(summaryContext, /唯一的确认步骤/);
   assert.match(summaryContext, /sidet-action 放在回复最后/);
   assert.match(summaryContext, /不要创建空模板、占位笔记或“待更新”笔记/);
+  // 摘要版也必须有格式骨架，否则模型会自己发明 action / path / content 字段。
+  assert.ok(summaryContext.includes("```sidet-action"));
+  assert.match(summaryContext, /tool \/ targetPath \/ title \/ reason/);
+  assert.match(summaryContext, /create_note \/ append_note \/ replace_note/);
+  assert.match(summaryContext, /不要用 YAML \/ JSON/);
 }
 
 function assertWebSearchPrompts(module) {
@@ -76,7 +65,30 @@ function assertWebSearchPrompts(module) {
   assert.match(decisionContext, /question 只写自然语言研究问题/);
 
   const queryContext = module.buildSidetResearchQueryContext("测试问题", new Date("2026-11-27T00:00:00+08:00"), 4);
-  assert.match(queryContext, /查询行只写自然语言关键词/);
+  assert.match(queryContext, /先理解再搜索/);
+  assert.match(queryContext, /\{"intent":/);
+  assert.match(queryContext, /answerNeed/);
+  assert.match(queryContext, /2-8 个词/);
+  assert.match(queryContext, /不超过 32 个字/);
+  assert.match(queryContext, /查询优先写中文/);
+  assert.match(queryContext, /不要给用户没提到的产品/);
+
+  const retryContext = module.buildSidetResearchQueryContext(
+    "测试问题",
+    new Date("2026-11-27T00:00:00+08:00"),
+    4,
+    [{
+      question: "测试问题",
+      queries: ["旧查询"],
+      hosts: ["pc6.com"],
+      pageCount: 0
+    }]
+  );
+  assert.match(retryContext, /已经试过的查询：旧查询/);
+  assert.match(retryContext, /pc6\.com/);
+  assert.match(retryContext, /必须换角度/);
+
+  assert.match(decisionContext, /答前自检/);
 
   const finalAnswerContext = module.buildSidetResearchFinalAnswerContext({
     hasEvidence: true,
@@ -94,6 +106,22 @@ function assertPromptMode(module) {
   assert.equal(module.resolveSidetFileToolPromptMode({ text: "一条完整的笔记" }), "full");
   assert.equal(module.resolveSidetFileToolPromptMode({ text: "我要写入笔记" }), "full");
   assert.equal(module.resolveSidetFileToolPromptMode({ text: "帮我查一下最近的新闻" }), "compact");
+  // 真实用户说法：量词在中间，不能退回没有格式样例的摘要版。
+  assert.equal(
+    module.resolveSidetFileToolPromptMode({
+      text: "帮我把孝心安8号的相关卖点和规则整理成一篇笔记"
+    }),
+    "full",
+    "整理成一篇笔记 must get the full action protocol"
+  );
+  assert.equal(module.resolveSidetFileToolPromptMode({ text: "整理一份笔记" }), "full");
+  assert.equal(module.resolveSidetFileToolPromptMode({ text: "写一篇读书笔记" }), "full");
+  assert.equal(module.resolveSidetFileToolPromptMode({ text: "把这篇文章做成一篇笔记" }), "full");
+  assert.equal(
+    module.resolveSidetFileToolPromptMode({ text: "帮我看看这篇笔记的结构" }),
+    "compact",
+    "reading a note must not be treated as a write request"
+  );
 }
 
 function assertNestedCodeFenceAction(module) {
@@ -220,25 +248,6 @@ function assertNestedCodeFenceAction(module) {
   ].join("\n"), "test");
   assert.equal(normalized?.targetPath, "Sidet/Drafts/normalized.md");
 
-  // Wiki 的 updatedAt 用消息时间而不是解析时刻，签名/内容必须稳定。
-  const wikiAction = [
-    "```sidet-action",
-    "tool: create_note",
-    "targetPath: Sidet/Wiki/Stable.md",
-    "---",
-    "# 稳定标题",
-    "正文",
-    "```"
-  ].join("\n");
-  const wikiA = module.parseSidetToolActionPreview(wikiAction, "test", {
-    updatedAt: "2026-11-28 0315"
-  });
-  const wikiB = module.parseSidetToolActionPreview(wikiAction, "test", {
-    updatedAt: "2026-11-28 0315"
-  });
-  assert.ok(wikiA && wikiB);
-  assert.equal(wikiA.content, wikiB.content);
-  assert.ok(wikiA.content.includes("2026-11-28 0315"));
 }
 
 function assertSidetActionTailTrim(module) {
@@ -301,21 +310,27 @@ function assertSidetActionTailTrim(module) {
   assert.ok(!visible.includes("请确认"));
 
   assert.equal(module.stripSidetActionAndFollowing("普通回答"), "普通回答");
+
+  // 卡片不会渲染的动作块（路径非法 / 缺字段）不能从正文裁掉，否则笔记凭空消失。
+  const badPath = [
+    "下面内容是我整理的笔记，需要你核对。",
+    "```sidet-action",
+    "tool: create_note",
+    "targetPath: ../坏路径.md",
+    "---",
+    "# 孝心安8号",
+    "正文",
+    "```"
+  ].join("\n");
+  assert.equal(
+    module.stripSidetActionAndFollowing(badPath),
+    badPath,
+    "a block that cannot render a card must stay visible instead of being silently dropped"
+  );
+  assert.equal(module.parseSidetToolActionPreview(badPath, "test"), null);
 }
 
 function assertDraftGenerationPrompts(module) {
-  const memoryBundle = module.buildMemoryCandidateBundle({
-    conversationTitle: "测试对话",
-    usefulMessageCount: 4,
-    attachmentCount: 2
-  });
-  assert.equal(memoryBundle.kind, "memory-candidate");
-  assert.ok(memoryBundle.footer?.some((line) => line.includes("本轮无记忆候选")));
-
-  const skillPrompt = module.buildSkillGenerationPrompt();
-  assert.match(skillPrompt, /完整 Skill 以 SKILL\.md 口径输出/);
-  assert.match(skillPrompt, /## 不写入/);
-
   const draftBundle = module.buildDraftNotePreviewBundle({
     conversationTitle: "测试对话",
     usefulMessageCount: 3,
@@ -327,13 +342,11 @@ function assertDraftGenerationPrompts(module) {
 
 async function main() {
   try {
-    const wikiModule = await loadBundledModule("src/agent/prompts/wiki-maintenance-prompts.ts");
     const draftModule = await loadBundledModule("src/agent/prompts/draft-generation-prompts.ts");
     const toolActionModule = await loadBundledModule("src/agent/prompts/tool-action-prompt.ts");
     const webSearchModule = await loadBundledModule("src/agent/prompts/web-search-prompts.ts");
     const actionProtocolModule = await loadBundledModule("src/agent/actions/agent-tool-protocol.ts");
     const baseContextModule = await loadBundledModule("src/agent/prompts/base-request-context.ts");
-    assertWikiMaintenancePrompts(wikiModule);
     assertDraftGenerationPrompts(draftModule);
     assertToolActionPrompts(toolActionModule);
     assertWebSearchPrompts(webSearchModule);

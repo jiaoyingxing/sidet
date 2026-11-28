@@ -44,7 +44,6 @@ export const AGENT_TOOL_DEFINITIONS: Record<AgentToolName, AgentToolDefinition> 
   search_notes: defineReadOnlyTool("search_notes"),
   read_note: defineReadOnlyTool("read_note"),
   note_links: defineReadOnlyTool("note_links"),
-  wiki_memory: defineReadOnlyTool("wiki_memory"),
   web_research: {
     name: "web_research",
     readOnly: true,

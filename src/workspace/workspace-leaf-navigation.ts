@@ -156,7 +156,6 @@ export class WorkspaceLeafNavigation {
         ? currentState.draft
         : this.store.getConversationDraft(conversationId),
       modelConfigId: conversationModelConfigId,
-      knowledgeBaseIndexPath: currentState.knowledgeBaseIndexPath ?? null,
       webSearchEnabled: currentState.webSearchEnabled === true
     }, {
       immediatePersistence: true
@@ -409,12 +408,11 @@ export class WorkspaceLeafNavigation {
     );
   }
 
-  private getModeStateSeed(): Pick<ChatLeafState, "knowledgeBaseIndexPath" | "webSearchEnabled"> {
+  private getModeStateSeed(): Pick<ChatLeafState, "webSearchEnabled"> {
     const navigationLeaf = this.getNavigationChatLeaf();
     if (navigationLeaf) {
       const state = this.runtime.getChatLeafState(navigationLeaf);
       return {
-        knowledgeBaseIndexPath: state.knowledgeBaseIndexPath ?? null,
         webSearchEnabled: state.webSearchEnabled === true
       };
     }

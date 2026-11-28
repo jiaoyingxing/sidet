@@ -25,6 +25,8 @@ export interface BuildSidetResearchResultBlockOptions {
   searchResultCount: number;
   sourceStart: number;
   pages: BuildSidetResearchResultPage[];
+  /** 未读搜索结果；给决策模型判断“这批结果是否对题”，不当作已读证据。 */
+  searchResults?: Array<{ title: string; url: string; snippet?: string }>;
   evidenceText: string;
 }
 
@@ -88,6 +90,21 @@ export function buildSidetResearchResultBlock(
   } else {
     for (const page of options.pages) {
       lines.push(`[${page.sourceIndex}] ${page.title} — ${page.url}`);
+    }
+  }
+
+  lines.push("---", "searchResults:");
+  const searchResults = (options.searchResults ?? []).slice(0, 8);
+  if (searchResults.length === 0) {
+    lines.push("- 本轮没有返回搜索结果。");
+  } else {
+    for (const result of searchResults) {
+      const title = toSingleLine(result.title) || result.url;
+      const snippet = toSingleLine(result.snippet ?? "");
+      const clippedSnippet = snippet.length > 120 ? `${snippet.slice(0, 120).trimEnd()}…` : snippet;
+      lines.push(
+        `- ${title} — ${result.url}${clippedSnippet ? ` — ${clippedSnippet}` : ""}`
+      );
     }
   }
 

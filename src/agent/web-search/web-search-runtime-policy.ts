@@ -318,3 +318,134 @@ export function buildFallbackSearchQueries(originalQuery: string): string[] {
   }
   return normalizeSearchQueries([originalQuery], { limit: 3 });
 }
+
+/** 单组检索词的长度上限；超过说明模型又把整句问题塞进来了。 */
+export const RESEARCH_QUERY_MAX_CHARS = 48;
+const RESEARCH_QUERY_MAX_TOKENS = 9;
+const RESEARCH_QUERY_INTERNAL_PATTERN = /sidet-|targetPath|tool\s*:|reason\s*:|question\s*:|系统规则|内部协议/i;
+const RESEARCH_QUERY_DOWNLOAD_PATTERN = /下载|安装包|客户端|破解版|绿色版|\bapk\b|\bipa\b/i;
+const RESEARCH_QUERY_URL_PATTERN = /^(?:https?:\/\/|www\.)/i;
+
+/**
+ * 上一轮研究的可回传摘要。
+ *
+ * 只带“试过什么、命中了哪些站、读到了几页正文”，不携带网页正文；
+ * 让检索前理解能换角度，而不是把同一批词再搜一遍。
+ */
+export interface ResearchAttemptSummary {
+  question: string;
+  queries: string[];
+  hosts: string[];
+  pageCount: number;
+}
+
+/** 查询去重键：忽略大小写、空白和常见分隔符，避免同义写法重复执行。 */
+export function normalizeResearchQueryKey(query: string): string {
+  return query
+    .toLowerCase()
+    .replace(/[\s\-_|–—·:：,，.。!！?？、;；()（）[\]【】"'“”]+/g, "")
+    .trim();
+}
+
+/**
+ * 对模型给出的检索词做硬校验。
+ *
+ * 提示词只能“建议”模型写短查询；解析端必须自己兜住整句、协议字段、
+ * 用户没要的下载词，以及与上一轮重复的查询，否则预算会被无效检索吃掉。
+ */
+export function sanitizeResearchQueries(
+  rawQueries: string[],
+  options: {
+    limit: number;
+    previousQueries?: readonly string[];
+    allowDownloadWords?: boolean;
+  }
+): string[] {
+  const limit = Math.max(0, Math.trunc(options.limit));
+  if (limit === 0) {
+    return [];
+  }
+
+  const previousKeys = new Set(
+    (options.previousQueries ?? [])
+      .map((query) => normalizeResearchQueryKey(query))
+      .filter(Boolean)
+  );
+  const queries: string[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const rawQuery of rawQueries) {
+    const normalized = normalizeWhitespace(rawQuery)
+      .replace(/^[\s"'“”`]+|[\s"'“”`]+$/g, "")
+      .trim();
+    if (!normalized) {
+      continue;
+    }
+    if (normalized.length > RESEARCH_QUERY_MAX_CHARS) {
+      continue;
+    }
+    if (normalized.split(/\s+/).filter(Boolean).length > RESEARCH_QUERY_MAX_TOKENS) {
+      continue;
+    }
+    if (
+      RESEARCH_QUERY_INTERNAL_PATTERN.test(normalized)
+      || RESEARCH_QUERY_URL_PATTERN.test(normalized)
+    ) {
+      continue;
+    }
+    if (!options.allowDownloadWords && RESEARCH_QUERY_DOWNLOAD_PATTERN.test(normalized)) {
+      continue;
+    }
+
+    const key = normalizeResearchQueryKey(normalized);
+    if (!key || seenKeys.has(key) || previousKeys.has(key)) {
+      continue;
+    }
+
+    seenKeys.add(key);
+    queries.push(normalized);
+    if (queries.length >= limit) {
+      break;
+    }
+  }
+
+  return queries;
+}
+
+/**
+ * 把一轮结果压成下一轮可用的摘要：去重后的前几个站点，加上读到的正文页数。
+ */
+export function buildResearchAttemptSummary(
+  question: string,
+  queries: readonly string[],
+  results: ReadonlyArray<{ host: string; url: string }>,
+  pageCount: number
+): ResearchAttemptSummary {
+  const hosts: string[] = [];
+  for (const result of results) {
+    const host = (result.host || resolveResultHost(result.url))
+      .trim()
+      .toLowerCase()
+      .replace(/^www\./, "");
+    if (host && !hosts.includes(host)) {
+      hosts.push(host);
+    }
+    if (hosts.length >= 5) {
+      break;
+    }
+  }
+  return {
+    question,
+    queries: Array.from(new Set(queries)),
+    hosts,
+    pageCount
+  };
+}
+
+function resolveResultHost(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).hostname;
+  } catch {
+    return "";
+  }
+}

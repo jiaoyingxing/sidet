@@ -11,7 +11,7 @@ import type {
  * 只读工具协议（第一步）：
  *
  * ```sidet-tool
- * tool: search_notes | read_note | note_links | wiki_memory | web_research
+ * tool: search_notes | read_note | note_links | web_research
  * query: ...
  * ```
  *
@@ -29,7 +29,6 @@ const REQUIRED_FIELD_BY_TOOL: Record<AgentToolName, "query" | "path"> = {
   search_notes: "query",
   read_note: "path",
   note_links: "path",
-  wiki_memory: "query",
   web_research: "query"
 };
 

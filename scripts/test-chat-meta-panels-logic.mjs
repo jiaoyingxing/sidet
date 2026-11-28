@@ -345,6 +345,28 @@ function assertProcessStreamOrder(module) {
     false,
     "a panel without boundaries should fall back instead of guessing"
   );
+
+  // 旧消息可能残留流式阶段的半截围栏；渲染前要清掉，合法代码块不能误删。
+  assert.equal(
+    module.stripAssistantProcessText("我先在知识库里检索一下。\n\n```"),
+    "我先在知识库里检索一下。",
+    "a stale hanging fence must not render as an empty code block"
+  );
+  assert.equal(
+    module.stripAssistantProcessText("示例：\n```js\nconst a = 1;\n```"),
+    "示例：\n```js\nconst a = 1;\n```",
+    "a complete code block must keep its closing fence"
+  );
+  const staleTail = {
+    id: "m-stale",
+    role: "assistant",
+    text: "我先在知识库里检索一下。\n\n```",
+    createdAt: Date.now(),
+    status: "done",
+    processStreamVersion: 1,
+    metaPanels: []
+  };
+  assert.equal(module.getAssistantDisplayText(staleTail), "我先在知识库里检索一下。");
 }
 
 async function main() {

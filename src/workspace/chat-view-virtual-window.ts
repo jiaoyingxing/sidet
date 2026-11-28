@@ -67,7 +67,7 @@ export function shouldUnmountVirtualItem(input: {
 export function estimateVirtualMessageHeight(
   message: Pick<
     MessageRecord,
-    "role" | "text" | "status" | "attachments" | "metaPanels" | "sources" | "knowledgeBaseRouting"
+    "role" | "text" | "status" | "attachments" | "metaPanels" | "sources"
   >
 ): number {
   const textLength = message.text?.length ?? 0;
@@ -82,13 +82,11 @@ export function estimateVirtualMessageHeight(
   }
   const metaPanelHeight = (message.metaPanels?.length ?? 0) * 34;
   const sourceFooterHeight = (message.sources?.length ?? 0) > 0 ? 30 : 0;
-  const routingHintHeight = message.knowledgeBaseRouting ? 64 : 0;
   return clampEstimateHeight(
     118
     + textLength * 0.98
     + metaPanelHeight
     + sourceFooterHeight
-    + routingHintHeight
     + attachmentHeight
   );
 }
@@ -106,7 +104,6 @@ export function buildVirtualMessageHeightSignature(
     | "metaPanels"
     | "sources"
     | "attachments"
-    | "knowledgeBaseRouting"
     | "activeAnswerVariantIndex"
     | "answerVariants"
     | "errorText"
@@ -122,14 +119,6 @@ export function buildVirtualMessageHeightSignature(
     metaPanelTotal,
     message.sources?.length ?? 0,
     message.attachments?.length ?? 0,
-    message.knowledgeBaseRouting
-      ? [
-          message.knowledgeBaseRouting.mode,
-          message.knowledgeBaseRouting.status ?? "complete",
-          message.knowledgeBaseRouting.resultCount,
-          message.knowledgeBaseRouting.hits.length
-        ].join(",")
-      : "",
     message.activeAnswerVariantIndex ?? 0,
     message.answerVariants?.length ?? 0,
     message.errorText?.length ?? 0

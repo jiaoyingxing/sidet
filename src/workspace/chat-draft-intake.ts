@@ -88,9 +88,6 @@ export class ChatDraftIntake {
     await this.contextInsertion.insertMarkdownFileIntoDraft(file, targetLeaf);
   }
 
-  async insertMemoryCandidatePromptIntoDraft(targetLeaf?: WorkspaceLeaf): Promise<void> {
-    await this.contextInsertion.insertMemoryCandidatePromptIntoDraft(targetLeaf);
-  }
 
   async insertDraftNotePreviewPromptIntoDraft(targetLeaf?: WorkspaceLeaf): Promise<void> {
     await this.contextInsertion.insertDraftNotePreviewPromptIntoDraft(targetLeaf);

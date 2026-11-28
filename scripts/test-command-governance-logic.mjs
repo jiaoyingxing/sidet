@@ -27,7 +27,7 @@ function assertPublicCommandCatalog() {
   const commandIds = [...source.matchAll(/this\.addCommand\(\{\s*id:\s*"([^"]+)"/g)]
     .map((match) => match[1]);
 
-  // 8 条公共产品命令之外，只允许显式登记的排障命令；新增产品意图仍然只能进这 8 条。
+  // 6 条公共产品命令之外，只允许显式登记的排障命令；新增产品意图仍然只能进这 6 条。
   const diagnosticCommandIds = ["export-mobile-input-diagnostic"];
   assert.deepEqual(
     commandIds.filter((id) => !diagnosticCommandIds.includes(id)),
@@ -37,9 +37,7 @@ function assertPublicCommandCatalog() {
       "new-sidet-conversation",
       "export-current-sidet-conversation",
       "insert-active-note-into-sidet-draft",
-      "insert-active-selection-into-sidet-draft",
-      "create-knowledge-base-index-for-folder",
-      "generate-wiki-memory-from-current-sidet-conversation"
+      "insert-active-selection-into-sidet-draft"
     ]
   );
   assert.deepEqual(
@@ -48,11 +46,6 @@ function assertPublicCommandCatalog() {
     "diagnostic commands must be explicitly allowlisted"
   );
   assert.match(source, /id:\s*"open-sidet-workspace"[\s\S]*?name:\s*"打开 Sidet"/);
-  assert.match(source, /id:\s*"create-knowledge-base-index-for-folder"[\s\S]*?name:\s*"将文件夹设为知识库"/);
-  assert.match(source, /id:\s*"generate-wiki-memory-from-current-sidet-conversation"[\s\S]*?name:\s*"整理当前内容到知识库"/);
-  assert.match(settingsSource, /setName\("Wiki 卡片维护"\)/);
-  assert.match(settingsSource, /此操作会直接修改文件/);
-  assert.match(settingsSource, /setWarning\(\)[\s\S]*?setButtonText\("检查并修复"\)/);
 }
 
 function assertHomeCommandBoundary(rules) {

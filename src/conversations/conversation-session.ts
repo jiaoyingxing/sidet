@@ -37,13 +37,7 @@ interface SendOptions {
   replaceFromMessageId?: string | null;
   /** 重新生成时保留旧回答：旧消息 id 作为新回答的第一个历史版本。 */
   variantOfMessageId?: string | null;
-  knowledgeBaseRouting?: MessageRecord["knowledgeBaseRouting"];
   onReplacementCommit?: (() => void) | null;
-}
-
-interface LocalAssistantReplyPayload {
-  assistantText: string;
-  knowledgeBaseRouting?: MessageRecord["knowledgeBaseRouting"];
 }
 
 export interface LocalAssistantTaskRuntime {
@@ -211,9 +205,7 @@ export class ConversationSession {
       : null;
     let replacementCommitted = false;
     try {
-      const userMessage = await this.store.appendUserMessage(conversationId, messageText, attachments, {
-        knowledgeBaseRouting: options.knowledgeBaseRouting
-      });
+      const userMessage = await this.store.appendUserMessage(conversationId, messageText, attachments);
       const commitReplacement = async (): Promise<void> => {
         if (!replaceFromMessageId || replacementCommitted) {
           return;
@@ -248,113 +240,6 @@ export class ConversationSession {
     } catch (error) {
       if (replaceSnapshot && !replacementCommitted) {
         await this.store.restoreConversationSnapshot(replaceSnapshot);
-      }
-      throw error;
-    }
-  }
-
-  async sendLocalAssistantReply(
-    conversationId: string,
-    text: string,
-    assistantReply: string | ((userMessage: MessageRecord) => Promise<LocalAssistantReplyPayload | string>),
-    attachments: MessageAttachment[] = [],
-    options: SendOptions = {}
-  ): Promise<void> {
-    const trimmed = text.trim();
-    if (!trimmed && attachments.length === 0) {
-      return;
-    }
-
-    if (this.hasActiveTask()) {
-      throw new Error("当前已有回复正在生成。");
-    }
-
-    if (!this.store.hasConversation(conversationId)) {
-      throw new Error("当前对话不存在，无法发送。");
-    }
-
-    const messageText = trimmed || (attachments.some((attachment) => attachment.type === "image")
-      ? "请解析这张图片。"
-      : attachments.some((attachment) => attachment.type === "webpage")
-        ? "请阅读引用网页。"
-        : "请阅读引用笔记。");
-    const replaceFromMessageId = options.replaceFromMessageId ?? null;
-    const replaceSnapshot = replaceFromMessageId
-      ? this.store.captureConversationSnapshot(conversationId)
-      : null;
-    let replacementCommitted = false;
-    let assistantMessage: MessageRecord | null = null;
-    let userMessage: MessageRecord | null = null;
-    try {
-      const appendedUserMessage = await this.store.appendUserMessage(conversationId, messageText, attachments, {
-        knowledgeBaseRouting: options.knowledgeBaseRouting
-      });
-      userMessage = appendedUserMessage;
-      const commitReplacement = async (): Promise<void> => {
-        if (!replaceFromMessageId || replacementCommitted) {
-          return;
-        }
-        await this.store.deleteMessagesBetween(conversationId, replaceFromMessageId, appendedUserMessage.id, {
-          updateConversationOrder: false
-        });
-        replacementCommitted = true;
-        options.onReplacementCommit?.();
-      };
-      assistantMessage = await this.store.beginAssistantMessage(conversationId);
-      const replyPayload = typeof assistantReply === "string"
-        ? assistantReply
-        : await assistantReply(appendedUserMessage);
-      const resolvedReply = typeof replyPayload === "string"
-        ? {
-            assistantText: replyPayload,
-            knowledgeBaseRouting: undefined
-          }
-        : replyPayload;
-      if (resolvedReply.knowledgeBaseRouting) {
-        this.store.updateMessageKnowledgeBaseRouting(
-          conversationId,
-          appendedUserMessage.id,
-          resolvedReply.knowledgeBaseRouting
-        );
-      } else if (appendedUserMessage.knowledgeBaseRouting?.status === "searching") {
-        this.store.updateMessageKnowledgeBaseRouting(
-          conversationId,
-          appendedUserMessage.id,
-          {
-            ...appendedUserMessage.knowledgeBaseRouting,
-            status: "error",
-            resultCount: 0,
-            hits: []
-          }
-        );
-      }
-      this.store.appendAssistantChunk(
-        conversationId,
-        assistantMessage.id,
-        resolvedReply.assistantText.trim() || "当前没有可显示的知识库检索结果。"
-      );
-      await this.store.finishAssistantMessage(conversationId, assistantMessage.id);
-      await commitReplacement();
-    } catch (error) {
-      if (replaceSnapshot && !replacementCommitted) {
-        await this.store.restoreConversationSnapshot(replaceSnapshot);
-      } else {
-        if (userMessage?.knowledgeBaseRouting?.status === "searching") {
-          this.store.updateMessageKnowledgeBaseRouting(
-            conversationId,
-            userMessage.id,
-            {
-              ...userMessage.knowledgeBaseRouting,
-              status: "error",
-              resultCount: 0,
-              hits: []
-            }
-          );
-        }
-        if (assistantMessage) {
-          const message = error instanceof Error ? error.message : "本地回复失败。";
-          await this.store.failAssistantMessage(conversationId, assistantMessage.id, message);
-        }
       }
       throw error;
     }
@@ -395,9 +280,7 @@ export class ConversationSession {
     let localTask: ActiveLocalTask | null = null;
 
     try {
-      const userMessage = await this.store.appendUserMessage(conversationId, messageText, attachments, {
-        knowledgeBaseRouting: options.knowledgeBaseRouting
-      });
+      const userMessage = await this.store.appendUserMessage(conversationId, messageText, attachments);
       const commitReplacement = async (): Promise<void> => {
         if (!replaceFromMessageId || replacementCommitted) {
           return;

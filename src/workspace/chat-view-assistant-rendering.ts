@@ -91,11 +91,6 @@ interface ChatViewAssistantRenderingOptions {
   setPlainMessageContent: (contentEl: HTMLDivElement, text: string) => void;
   renderMarkdown: (parentEl: HTMLElement, markdown: string) => void;
   renderInlineToolAction: (parentEl: HTMLElement, conversation: ConversationRecord, message: MessageRecord) => void;
-  renderWikiMaintenancePlanAction: (
-    parentEl: HTMLElement,
-    conversation: ConversationRecord,
-    message: MessageRecord
-  ) => void;
   renderAnswerSources: (parentEl: HTMLElement, message: MessageRecord) => void;
   renderAnswerActions: (
     parentEl: HTMLElement,
@@ -637,7 +632,6 @@ export class ChatViewAssistantRendering {
     }
 
     this.options.renderAnswerSources(lastItemEl, lastMessage);
-    this.options.renderWikiMaintenancePlanAction(lastItemEl, conversation, lastMessage);
     this.options.renderInlineToolAction(lastItemEl, conversation, lastMessage);
     this.options.renderAnswerActions(lastItemEl, conversation, lastMessage);
     recordChatRenderTrace("assistant-patch", {

@@ -154,6 +154,100 @@ async function assertProtocolReplyStreamsReasoning(controller) {
   assert.match(reply.contentText, /sidet-research/, "protocol reply should still return the collected protocol block");
 }
 
+async function assertProtocolReplyStreamsVisibleContent(controller) {
+  const contentChunks = [];
+  const runtime = {
+    appendContent: (chunk) => {
+      contentChunks.push(chunk);
+    },
+    appendReasoning: () => undefined,
+    streamModelReply: async (_messages, options = {}) => {
+      options.onContentChunk?.("第一段", {
+        contentText: "第一段",
+        reasoningText: ""
+      });
+      options.onContentChunk?.("第二段", {
+        contentText: "第一段第二段",
+        reasoningText: ""
+      });
+      return {
+        contentText: "第一段第二段",
+        reasoningText: "",
+        stoppedEarly: false
+      };
+    }
+  };
+
+  const reply = await controller.streamProtocolReply(runtime, [], {
+    parseResearch: true,
+    streamVisibleContent: true
+  });
+
+  assert.deepEqual(contentChunks, ["第一段", "第二段"], "decision rounds should stream visible answer diffs");
+  assert.equal(reply.visibleContentStreamed, true);
+}
+
+async function assertProtocolReplyHidesResearchBlockWhileStreaming(controller) {
+  const contentChunks = [];
+  const block = "```sidet-research\nquestion: 还需要补一轮\n```";
+  const runtime = {
+    appendContent: (chunk) => {
+      contentChunks.push(chunk);
+    },
+    appendReasoning: () => undefined,
+    streamModelReply: async (_messages, options = {}) => {
+      options.onContentChunk?.(block, {
+        contentText: block,
+        reasoningText: ""
+      });
+      return {
+        contentText: block,
+        reasoningText: "",
+        stoppedEarly: true
+      };
+    }
+  };
+
+  const reply = await controller.streamProtocolReply(runtime, [], {
+    parseResearch: true,
+    streamVisibleContent: true
+  });
+
+  assert.deepEqual(contentChunks, [], "research protocol blocks must not be streamed to the answer body");
+  assert.equal(reply.visibleContentStreamed, false);
+  assert.match(reply.contentText, /sidet-research/);
+}
+
+async function assertProtocolReplyHidesBareResearchAttempt(controller) {
+  const contentChunks = [];
+  const malformed = "sidet-research\nquestion: 没有围栏的协议";
+  const runtime = {
+    appendContent: (chunk) => {
+      contentChunks.push(chunk);
+    },
+    appendReasoning: () => undefined,
+    streamModelReply: async (_messages, options = {}) => {
+      options.onContentChunk?.(malformed, {
+        contentText: malformed,
+        reasoningText: ""
+      });
+      return {
+        contentText: malformed,
+        reasoningText: "",
+        stoppedEarly: false
+      };
+    }
+  };
+
+  const reply = await controller.streamProtocolReply(runtime, [], {
+    parseResearch: true,
+    streamVisibleContent: true
+  });
+
+  assert.deepEqual(contentChunks, [], "bare malformed research attempts must not leak into the answer body");
+  assert.equal(reply.visibleContentStreamed, false);
+}
+
 async function assertDisplayableAnswerFallsBackWhenNoVisibleText(controller) {
   const contentChunks = [];
   let repairOptions = null;
@@ -282,23 +376,23 @@ async function assertResearchRoundWiring(controller) {
         providerLabel: "Bing + 百度",
         results: [
           {
-            title: "Result A",
+            title: "Alpha 结果",
             url: "https://a.example.com/1",
             host: "a.example.com",
-            snippet: "snippet A"
+            snippet: "alpha snippet"
           },
           {
-            title: "Result B",
+            title: "Beta 结果",
             url: "https://b.example.com/1",
             host: "b.example.com",
-            snippet: "snippet B"
+            snippet: "beta snippet"
           }
         ]
       };
     }
   };
-  controller.buildWebpageAttachment = async (url) => {
-    calls.fetch.push(url);
+  controller.buildWebpageAttachment = async (url, fetchOptions = {}) => {
+    calls.fetch.push({ url, options: fetchOptions });
     return {
       id: `attachment-${calls.fetch.length}`,
       type: "webpage",
@@ -316,7 +410,7 @@ async function assertResearchRoundWiring(controller) {
     completeModelReply: async (messages) => {
       calls.complete.push(messages.map((message) => message.text).join("\n"));
       const systemText = messages[0]?.text ?? "";
-      if (systemText.includes("检索规划")) {
+      if (systemText.includes("检索前理解")) {
         return { contentText: "query1: alpha\nquery2: beta", reasoningText: "" };
       }
       if (systemText.includes("证据整理")) {
@@ -342,13 +436,24 @@ async function assertResearchRoundWiring(controller) {
   assert.equal(calls.search.length, 1, "research should call searchMany once");
   assert.deepEqual(calls.search[0].queries, ["alpha", "beta"]);
   assert.equal(calls.search[0].options.maxQueries, 4);
-  assert.deepEqual(calls.fetch, [
+  assert.deepEqual(calls.fetch.map((item) => item.url), [
     "https://a.example.com/1",
     "https://b.example.com/1"
   ], "the agent should fetch selected pages in ranked order");
-  assert.equal(calls.complete.length, 2, "research should use one query-expansion and one evidence-compression call");
-  assert.ok(calls.complete[0].includes("检索规划"));
-  assert.ok(calls.complete[1].includes("证据整理"));
+  assert.ok(
+    calls.fetch.every((item) => item.options.timeoutMs === 8_000),
+    "research page fetches should use the shorter research timeout"
+  );
+  assert.equal(
+    calls.complete.length,
+    1,
+    "small first-round evidence should skip the compression call"
+  );
+  assert.ok(calls.complete[0].includes("检索前理解"));
+  assert.ok(
+    calls.complete.every((text) => !text.includes("证据整理")),
+    "small evidence should not enter the compression prompt"
+  );
   assert.deepEqual(calls.content, ["这是最终答案"]);
   assert.equal(calls.sources.length, 1);
   assert.deepEqual(calls.sources[0].map((source) => source.url), [
@@ -367,6 +472,92 @@ async function assertResearchRoundWiring(controller) {
   );
 }
 
+async function assertResearchCompressionDropsConversationHistory(controller) {
+  const calls = {
+    fetch: [],
+    complete: [],
+    sources: [],
+    content: []
+  };
+  controller.webSearch = {
+    searchMany: async () => ({
+      providerLabel: "Bing",
+      results: [
+        {
+          title: "Long Result 1",
+          url: "https://long.example.com/1",
+          host: "long.example.com",
+          snippet: "长证据摘要一"
+        },
+        {
+          title: "Long Result 2",
+          url: "https://long2.example.com/2",
+          host: "long2.example.com",
+          snippet: "长证据摘要二"
+        }
+      ]
+    })
+  };
+  controller.buildWebpageAttachment = async (url, fetchOptions = {}) => {
+    calls.fetch.push({ url, options: fetchOptions });
+    return {
+      id: `attachment-long-${url}`,
+      type: "webpage",
+      name: "Long Page",
+      url,
+      content: "formatted long page",
+      rawContent: "长证据".repeat(5_000),
+      truncated: false,
+      size: 15_000
+    };
+  };
+
+  const runtime = {
+    buildRequestMessages: () => [{
+      id: "history",
+      role: "user",
+      text: "历史消息",
+      createdAt: 1,
+      status: "done"
+    }],
+    completeModelReply: async (messages) => {
+      calls.complete.push(messages.map((message) => message.text).join("\n"));
+      const systemText = messages[0]?.text ?? "";
+      if (systemText.includes("检索前理解")) {
+        return { contentText: "query1: alpha", reasoningText: "" };
+      }
+      if (systemText.includes("证据整理")) {
+        return { contentText: "结论：长证据 [1]", reasoningText: "" };
+      }
+      return { contentText: "", reasoningText: "" };
+    },
+    streamModelReply: async () => ({
+      contentText: "长证据最终答案",
+      reasoningText: "",
+      stoppedEarly: false
+    }),
+    appendContent: (chunk) => calls.content.push(chunk),
+    appendReasoning: () => undefined,
+    appendMetaPanelText: () => undefined,
+    setMetaPanelSources: () => undefined,
+    setSources: (sources) => calls.sources.push(sources),
+    getAbortSignal: () => new AbortController().signal
+  };
+
+  await controller.runModelDrivenWebSearch("长证据研究问题", null, runtime);
+
+  assert.equal(calls.complete.length, 2, "oversized evidence should still use the compression call");
+  assert.ok(calls.complete[0].includes("检索前理解"));
+  assert.ok(calls.complete[0].includes("历史消息"), "query expansion may keep recent conversation context");
+  assert.ok(calls.complete[1].includes("证据整理"));
+  assert.ok(
+    !calls.complete[1].includes("历史消息"),
+    "evidence compression should receive only the question and evidence, not the whole conversation"
+  );
+  assert.deepEqual(calls.content, ["长证据最终答案"]);
+  assert.equal(calls.sources.length, 1);
+}
+
 async function main() {
   try {
     const module = await loadBundledModule("src/workspace/workspace-controller.ts");
@@ -374,10 +565,14 @@ async function main() {
     assertSearchOnlyFallbackUsesOriginalQuery(controller);
     await assertDisplayableAnswerStreamsIncrementally(controller);
     await assertProtocolReplyStreamsReasoning(controller);
+    await assertProtocolReplyStreamsVisibleContent(controller);
+    await assertProtocolReplyHidesResearchBlockWhileStreaming(controller);
+    await assertProtocolReplyHidesBareResearchAttempt(controller);
     await assertDisplayableAnswerFallsBackWhenNoVisibleText(controller);
     await assertWebSearchFinalAnswerUsesResearchContext(controller);
     assertStructuredSourcesWithFetchedSources(controller);
     await assertResearchRoundWiring(controller);
+    await assertResearchCompressionDropsConversationHistory(controller);
     console.log("sidet web search answering logic test passed");
   } finally {
     for (const tempDir of tempDirs) {

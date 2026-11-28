@@ -14,7 +14,6 @@ export interface EditingMessageState {
   messageId: string;
   originalDraft: string;
   originalAttachments: MessageAttachment[];
-  originalKnowledgeBaseIndexPath: string | null;
   originalWebSearchEnabled: boolean;
 }
 
@@ -41,7 +40,6 @@ interface ChatViewMessageActionsOptions {
   isPhoneLayout: () => boolean;
   isMobileRuntime: () => boolean;
   closeOtherMenus: () => void;
-  getCurrentKnowledgeBaseIndexPath: () => string | null;
   getCurrentWebSearchEnabled: () => boolean;
 }
 
@@ -296,7 +294,6 @@ export class ChatViewMessageActions {
         messageId: message.id,
         originalDraft: this.options.getLeafComposerDraft(),
         originalAttachments: cloneMessageAttachments(this.options.getDraftAttachments()),
-        originalKnowledgeBaseIndexPath: this.options.getCurrentKnowledgeBaseIndexPath(),
         originalWebSearchEnabled: this.options.getCurrentWebSearchEnabled()
       };
       this.options.setDraftAttachments(draftAttachments);

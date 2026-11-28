@@ -3,12 +3,13 @@ import type { MessageAttachment } from "../../types";
 export type SidetFileToolPromptMode = "off" | "compact" | "full";
 
 const FILE_TOOL_FULL_INTENT_PATTERNS: RegExp[] = [
-  /保存(?:成|为)?(?:一篇)?笔记/,
+  /保存(?:成|为)?(?:一篇|一份)?笔记/,
   /保存对话/,
   /写入/,
   /写到/,
   /落盘/,
-  /整理到知识库/,
+  // “整理成一篇笔记 / 写一份笔记 / 做成一篇笔记”：中间常有量词，不能只匹配紧邻写法。
+  /(?:整理|写|生成|创建|保存|做成|变成)(?:成|为|到)?(?:一篇|一份|一个)?[^，。；\n]{0,8}笔记/,
   /整理成笔记/,
   /新建.*笔记/,
   /创建.*笔记/,
@@ -21,7 +22,7 @@ const FILE_TOOL_FULL_INTENT_PATTERNS: RegExp[] = [
   /追加/,
   /覆盖/,
   /替换/,
-  /更新.*(?:笔记|wiki|index)/i,
+  /更新.*笔记/i,
   /create_note/i,
   /append_note/i,
   /replace_note/i

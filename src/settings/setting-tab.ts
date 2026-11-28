@@ -1,7 +1,6 @@
 import {
   App,
   ButtonComponent,
-  Modal,
   PluginSettingTab,
   Setting,
   SettingDefinitionItem,
@@ -10,7 +9,6 @@ import {
 } from "obsidian";
 import { DEFAULT_EXPORT_FOLDER } from "../constants";
 import type SidetPlugin from "../main";
-import { createSidetModalFooter } from "../shared/modal/sidet-modal-shell";
 import {
   SETTINGS_ROOT_PAGE,
   SETTINGS_TAB_ICON,
@@ -67,53 +65,6 @@ function configureAboutContactButton(
     cls: "sidet-settings-about-contact-button-label",
     text: options.label
   });
-}
-
-class RepairWikiNotesConfirmModal extends Modal {
-  constructor(
-    app: App,
-    private readonly onConfirm: () => Promise<void>
-  ) {
-    super(app);
-  }
-
-  override onOpen(): void {
-    this.titleEl.setText("检查并修复 Wiki 卡片");
-    this.contentEl.empty();
-    this.contentEl.createEl("p", {
-      text: "Sidet 将检查 Sidet/Wiki 中的 Markdown，并把不符合当前格式的文件改写为现行 Wiki 卡片格式。"
-    });
-    this.contentEl.createEl("p", {
-      cls: "setting-item-description",
-      text: "此操作会直接修改文件，建议先确认同步或备份已经完成。"
-    });
-
-    const actions = createSidetModalFooter(this.contentEl);
-
-    new ButtonComponent(actions)
-      .setButtonText("取消")
-      .setClass("mod-cancel")
-      .onClick(() => {
-        this.close();
-      });
-
-    const confirmButton = new ButtonComponent(actions)
-      .setWarning()
-      .setButtonText("检查并修复")
-      .onClick(() => {
-        void this.confirm(confirmButton);
-      });
-  }
-
-  override onClose(): void {
-    this.contentEl.empty();
-  }
-
-  private async confirm(button: ButtonComponent): Promise<void> {
-    button.setDisabled(true).setButtonText("处理中…");
-    await this.onConfirm();
-    this.close();
-  }
 }
 
 export class DialogSettingTab extends PluginSettingTab {
@@ -269,11 +220,6 @@ export class DialogSettingTab extends PluginSettingTab {
                 name: "已归档对话",
                 desc: "查看已归档对话，并手动恢复或删除。",
                 render: (setting) => this.configureArchivedConversationsRow(setting),
-              },
-              {
-                name: "Wiki 卡片维护",
-                desc: "检查并修复历史 Wiki 卡片格式。仅在需要维护旧数据时使用。",
-                render: (setting) => this.configureWikiRepairRow(setting),
               },
             ],
           },
@@ -447,7 +393,6 @@ export class DialogSettingTab extends PluginSettingTab {
     const group = new SettingGroup(containerEl).setHeading("数据与导出");
     group.addSetting((setting) => this.configureExportFolderRow(setting));
     group.addSetting((setting) => this.configureArchivedConversationsRow(setting));
-    group.addSetting((setting) => this.configureWikiRepairRow(setting));
   }
 
   /** 导出目录行（display() 组路径与声明式「数据导出」页 render 回调共用）。 */
@@ -481,19 +426,4 @@ export class DialogSettingTab extends PluginSettingTab {
       });
   }
 
-  /** Wiki 卡片维护行（两轨道共用；确认弹窗外置，两轨道行为一致）。 */
-  private configureWikiRepairRow(setting: Setting): void {
-    setting
-      .setName("Wiki 卡片维护")
-      .setDesc("检查并修复历史 Wiki 卡片格式。仅在需要维护旧数据时使用。")
-      .addButton((button) => {
-        button
-          .setButtonText("检查并修复")
-          .onClick(() => {
-            new RepairWikiNotesConfirmModal(this.app, () => {
-              return this.plugin.repairSidetWikiNotes();
-            }).open();
-          });
-      });
-  }
 }

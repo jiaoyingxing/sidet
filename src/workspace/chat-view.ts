@@ -9,7 +9,6 @@ import {
   type ViewStateResult
 } from "obsidian";
 import {
-  ALL_KNOWLEDGE_BASES_SELECTION,
   CHAT_VIEW_ICON,
   CHAT_VIEW_TYPE
 } from "../constants";
@@ -17,7 +16,7 @@ import type {
   ChatLeafState,
   MessageRecord
 } from "../types";
-import { openChatModelMenu, openKnowledgeBaseSelectionMenu } from "./chat-model-menu";
+import { openChatModelMenu } from "./chat-model-menu";
 import { ComposerModal } from "./composer-modal";
 import { releaseDesktopPaneMinWidthIfUnused, resolveDesktopPaneItemElement } from "./desktop-pane-min-width";
 import { createIconButton } from "./icon-button";
@@ -44,7 +43,6 @@ import {
   type ChatHomeCapability,
   type ChatHomeCapabilityId
 } from "./chat-home";
-import type { DraftLeadingChip } from "./chat-attachment-rendering";
 import {
   ChatViewConversationRuntime,
   type ChatViewScrollIntent
@@ -86,12 +84,6 @@ const MOBILE_TAIL_OBSERVATION_ARM_EVENTS = new Set([
   "layer.change.active"
 ]);
 
-const HOME_WIKI_CARD_REQUEST_CONTEXT = [
-  "用户从 Sidet 首页选择了“Wiki卡片”。",
-  "请把本轮输入整理成一张简洁、可独立理解、便于后续保存到 Sidet Wiki 的知识卡片草稿。",
-  "只生成卡片内容，不要声称已经写入或修改任何文件。"
-].join("\n");
-
 function readMobileHomeDiagnosticRect(
   element: Element | null
 ): MobileHomeDiagnosticRect | null {
@@ -127,7 +119,7 @@ function roundMobileHomeDiagnosticNumber(value: number): number {
  * 2. 消息区 / 滚动：assistantRendering、getScrollHost、updatePinnedToBottom、syncScrollAffordances。
  * 3. 主页展示态：renderHome、buildHomeCapabilities、homeComposerSlotEl、syncHomeComposerPosition。
  * 4. Composer / 发送：draftRuntime、contextIntake、mobileComposer、syncComposer*。
- * 5. 菜单 / 浮层：openModelMenu、openKnowledgeBaseMenu、closeChatMenus、composerModal。
+ * 5. 菜单 / 浮层：openModelMenu、closeChatMenus、composerModal。
  * 6. 移动输入 / 诊断：chat-view-mobile-* helper；mobileHome* 字段只服务诊断与锚点。
  * 7. 监听器生命周期：bindRuntimeListeners 把清理函数压入 disposeCallbacks，onClose 统一执行。
  *
@@ -179,7 +171,6 @@ export class ChatView extends ItemView {
   private mobileHomeLifecycleDiagnosticFrame: number | null = null;
   private pendingMobileHomeLifecycleGeometryEvent: string | null = null;
   private mobileTailObservationUntilMs = 0;
-  private homeWikiCardSelected = false;
   private localDraft = "";
   private readonly draftOrigin = `chat-view-${++chatViewOriginCounter}`;
   private desktopPaneItemEl: HTMLElement | null = null;
@@ -213,7 +204,6 @@ export class ChatView extends ItemView {
       isPhoneLayout: () => this.isPhoneLayout(),
       isMobileRuntime: () => this.isMobileRuntime(),
       closeOtherMenus: () => this.closeChatMenus("message"),
-      getCurrentKnowledgeBaseIndexPath: () => this.controller.getLeafViewState(this.leaf).knowledgeBaseIndexPath,
       getCurrentWebSearchEnabled: () => this.controller.getLeafViewState(this.leaf).webSearchEnabled
     });
     this.contextIntake = new ChatViewContextIntake({
@@ -232,13 +222,9 @@ export class ChatView extends ItemView {
       isEditingDraftActive: () => this.messageActions.isEditingDraftActive(),
       cancelEditingMessage: (options) => this.messageActions.cancelEditingMessage(options),
       removeSelectedLinkText: (match, draftSnapshot) => this.inlineSuggests.removeSelectedLinkText(match, draftSnapshot),
-      openKnowledgeBaseMenu: (anchorEl) => {
-        void this.openKnowledgeBaseMenu(anchorEl);
-      },
       openModelMenu: (anchorEl) => {
         void this.openModelMenu(anchorEl);
-      },
-      getAdditionalLeadingChips: () => this.getHomeAdditionalLeadingChips()
+      }
     });
     this.inlineSuggests = new ChatViewInlineSuggests({
       controller: this.controller,
@@ -305,8 +291,6 @@ export class ChatView extends ItemView {
       renderMarkdown: (parentEl, markdown) => this.renderAnswerMarkdown(parentEl, markdown),
       renderInlineToolAction: (parentEl, conversation, message) =>
         this.assistantActions.renderInlineToolAction(parentEl, conversation, message),
-      renderWikiMaintenancePlanAction: (parentEl, conversation, message) =>
-        this.assistantActions.renderWikiMaintenancePlanAction(parentEl, conversation, message),
       renderAnswerSources: (parentEl, message) =>
         this.assistantActions.renderAnswerSources(parentEl, message),
       renderAnswerActions: (parentEl, conversation, message) =>
@@ -344,8 +328,6 @@ export class ChatView extends ItemView {
       setPlainMessageContent: (contentEl, text) => this.setPlainMessageContent(contentEl, text),
       renderInlineToolAction: (parentEl, conversation, message) =>
         this.assistantActions.renderInlineToolAction(parentEl, conversation, message),
-      renderWikiMaintenancePlanAction: (parentEl, conversation, message) =>
-        this.assistantActions.renderWikiMaintenancePlanAction(parentEl, conversation, message),
       renderAnswerSources: (parentEl, message) =>
         this.assistantActions.renderAnswerSources(parentEl, message),
       renderAnswerActions: (parentEl, conversation, message) =>
@@ -457,7 +439,6 @@ export class ChatView extends ItemView {
       clearPendingScrollIntent: () => {
         this.conversationRuntime.clearPendingScrollIntent();
       },
-      getRequestContextPrefix: () => this.getHomeRequestContextPrefix(),
       showSendError: (error) => this.controller.showSendError(error)
     });
   }
@@ -551,7 +532,6 @@ export class ChatView extends ItemView {
     this.mobileHomeWorkspaceAnchor = null;
     this.homeCapabilityRowEl = null;
     this.homeCapabilityEls.clear();
-    this.homeWikiCardSelected = false;
     this.contextIntake.release();
     this.messageActions.closeMessageMenu();
     this.closeModelMenu();
@@ -810,21 +790,6 @@ export class ChatView extends ItemView {
   private buildHomeCapabilities(): ChatHomeCapability[] {
     return [
       {
-        id: "knowledge-base",
-        label: CHAT_HOME_CAPABILITY_LABELS["knowledge-base"],
-        icon: "layers",
-        selected: this.isHomeCapabilitySelected("knowledge-base"),
-        onSelect: (anchorEl) => {
-          if (this.isHomeCapabilitySelected("knowledge-base")) {
-            this.controller.setSelectedKnowledgeBase(this.leaf, null);
-          } else {
-            this.setHomeWikiCardSelected(false);
-            this.controller.setSelectedKnowledgeBase(this.leaf, ALL_KNOWLEDGE_BASES_SELECTION);
-          }
-          this.finishHomeCapabilityToggle(anchorEl);
-        }
-      },
-      {
         id: "web-clipping",
         label: CHAT_HOME_CAPABILITY_LABELS["web-clipping"],
         icon: "clipboard",
@@ -835,7 +800,6 @@ export class ChatView extends ItemView {
             this.finishHomeCapabilityToggle(anchorEl);
             return;
           }
-          this.setHomeWikiCardSelected(false);
           this.contextIntake.openWebpageAttachmentPicker();
         }
       },
@@ -848,24 +812,7 @@ export class ChatView extends ItemView {
           if (this.isHomeCapabilitySelected("web-search")) {
             this.controller.setWebSearchEnabled(this.leaf, false);
           } else {
-            this.setHomeWikiCardSelected(false);
             this.controller.setWebSearchEnabled(this.leaf, true);
-          }
-          this.finishHomeCapabilityToggle(anchorEl);
-        }
-      },
-      {
-        id: "wiki-card",
-        label: CHAT_HOME_CAPABILITY_LABELS["wiki-card"],
-        icon: "book-open",
-        selected: this.isHomeCapabilitySelected("wiki-card"),
-        onSelect: (anchorEl) => {
-          if (this.isHomeCapabilitySelected("wiki-card")) {
-            this.setHomeWikiCardSelected(false);
-          } else {
-            this.controller.setSelectedKnowledgeBase(this.leaf, null);
-            this.controller.setWebSearchEnabled(this.leaf, false);
-            this.setHomeWikiCardSelected(true);
           }
           this.finishHomeCapabilityToggle(anchorEl);
         }
@@ -883,47 +830,10 @@ export class ChatView extends ItemView {
   }
 
   private isHomeCapabilitySelected(capabilityId: ChatHomeCapabilityId): boolean {
-    if (capabilityId === "knowledge-base") {
-      return this.controller.getSelectedKnowledgeBaseState(this.leaf).mode !== "none";
-    }
     if (capabilityId === "web-clipping") {
       return this.contextIntake.getDraftAttachments().some((attachment) => attachment.type === "webpage");
     }
-    if (capabilityId === "web-search") {
-      return this.controller.isWebSearchEnabled(this.leaf);
-    }
-    return this.homeWikiCardSelected;
-  }
-
-  private setHomeWikiCardSelected(selected: boolean): void {
-    if (this.homeWikiCardSelected === selected) {
-      return;
-    }
-    this.homeWikiCardSelected = selected;
-    this.contextIntake.syncDraftAttachmentChips();
-    this.syncComposerButtons();
-  }
-
-  private getHomeAdditionalLeadingChips(): DraftLeadingChip[] {
-    if (!this.homeComposerSlotEl || !this.homeWikiCardSelected) {
-      return [];
-    }
-    return [
-      {
-        label: "Wiki卡片",
-        icon: "book-open",
-        removeLabel: "取消 Wiki 卡片",
-        onRemove: () => {
-          this.setHomeWikiCardSelected(false);
-        }
-      }
-    ];
-  }
-
-  private getHomeRequestContextPrefix(): string | null {
-    return this.homeComposerSlotEl && this.homeWikiCardSelected
-      ? HOME_WIKI_CARD_REQUEST_CONTEXT
-      : null;
+    return this.controller.isWebSearchEnabled(this.leaf);
   }
 
   private setHomeComposerSlot(slotEl: HTMLDivElement | null): void {
@@ -954,9 +864,6 @@ export class ChatView extends ItemView {
       this.homeCapabilityEls.clear();
       this.cancelHomeComposerPositionSync();
       this.clearHomeComposerPosition();
-      if (this.controller.getChatLeafState(this.leaf).conversationId !== null) {
-        this.homeWikiCardSelected = false;
-      }
     }
 
     this.mobileComposer.syncMobileComposerLayerState();
@@ -1247,7 +1154,6 @@ export class ChatView extends ItemView {
     const isArchived = this.controller.isLeafConversationArchived(this.leaf);
     const attachmentCount = this.contextIntake.getDraftAttachments().length;
     const canSend = draft.length > 0 || attachmentCount > 0;
-    const isKnowledgeBaseMode = this.controller.getSelectedKnowledgeBaseState(this.leaf).mode !== "none";
     const isWebSearchMode = this.controller.getLeafViewState(this.leaf).webSearchEnabled && attachmentCount === 0;
     this.mobileComposer.syncPlaceholder();
     this.mobileComposer.syncReadOnly();
@@ -1260,7 +1166,7 @@ export class ChatView extends ItemView {
       sendButton.setState({
         disabled: isArchived || (!isStreaming && !canSend),
         streaming: isStreaming,
-        idleLabel: isKnowledgeBaseMode || isWebSearchMode ? "检索" : "发送"
+        idleLabel: isWebSearchMode ? "检索" : "发送"
       });
     }
     this.mobileComposer.syncInlineExpandControls();
@@ -1273,13 +1179,6 @@ export class ChatView extends ItemView {
     }
     if (this.contextIntake.getDraftAttachments().length > 0) {
       return "输入消息";
-    }
-    const selectedKnowledgeBaseState = this.controller.getSelectedKnowledgeBaseState(this.leaf);
-    if (selectedKnowledgeBaseState.mode === "single" && selectedKnowledgeBaseState.displayName) {
-      return `搜索知识库：${selectedKnowledgeBaseState.displayName}`;
-    }
-    if (selectedKnowledgeBaseState.mode === "all") {
-      return "搜索全部知识库";
     }
     if (this.controller.getLeafViewState(this.leaf).webSearchEnabled) {
       return "联网搜索";
@@ -1774,32 +1673,14 @@ export class ChatView extends ItemView {
     this.modelMenuAnchorEl = null;
   }
 
-  private async openModelMenu(anchorEl: HTMLElement): Promise<void> {
+  private openModelMenu(anchorEl: HTMLElement): void {
     if (this.modelMenuClose && this.modelMenuAnchorEl === anchorEl) {
       this.closeModelMenu();
       return;
     }
 
     this.closeChatMenus("model");
-    await this.controller.refreshKnowledgeBases().catch((error) => {
-      console.warn("Sidet：打开模型菜单前刷新知识库识别失败。", error);
-    });
     const handle = openChatModelMenu(anchorEl, this.controller, () => {
-      this.modelMenuClose = null;
-      this.modelMenuAnchorEl = null;
-    }, this.leaf);
-    this.modelMenuAnchorEl = anchorEl;
-    this.modelMenuClose = () => handle.close();
-  }
-
-  private async openKnowledgeBaseMenu(anchorEl: HTMLElement): Promise<void> {
-    if (this.modelMenuClose && this.modelMenuAnchorEl === anchorEl) {
-      this.closeModelMenu();
-      return;
-    }
-
-    this.closeChatMenus("model");
-    const handle = await openKnowledgeBaseSelectionMenu(anchorEl, this.controller, () => {
       this.modelMenuClose = null;
       this.modelMenuAnchorEl = null;
     }, this.leaf);

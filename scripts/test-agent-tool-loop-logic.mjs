@@ -537,7 +537,7 @@ async function assertAutoWebSearchToolGating(Harness) {
 
 function assertToolLoopPrompts(Harness) {
   const systemContext = Harness.buildAgentToolSystemContext({ webResearch: false });
-  for (const toolName of ["search_notes", "read_note", "note_links", "wiki_memory"]) {
+  for (const toolName of ["search_notes", "read_note", "note_links"]) {
     assert.ok(systemContext.includes(toolName), `system context should mention ${toolName}`);
   }
   assert.ok(
@@ -552,8 +552,16 @@ function assertToolLoopPrompts(Harness) {
 
   const webContext = Harness.buildAgentToolSystemContext({ webResearch: true });
   assert.match(webContext, /web_research（联网搜索）/);
-  assert.match(webContext, /五个只读工具/);
+  assert.match(webContext, /四个只读工具/);
   assert.match(webContext, /\[n\] 来源编号/);
+  assert.match(webContext, /用户明确要求联网/);
+  assert.match(webContext, /不要为定义、常识/);
+  assert.match(webContext, /优先直接回答/);
+  assert.match(webContext, /默认最多调用一次/);
+  assert.ok(
+    !webContext.includes("外部事实"),
+    "auto web search should no longer use the broad external-fact trigger"
+  );
 
   const repairContext = Harness.buildAgentToolRepairContext({ webResearch: false });
   assert.match(repairContext, /工具协议补正/);
@@ -772,6 +780,60 @@ async function assertToolResultBudgetGuard(Harness) {
   assert.equal(result.finalText, "工具结果预算用尽，基于已有结果回答。");
 }
 
+async function assertForcedFinalAnswerRepairsToolAttempt(Harness) {
+  const preface = "下面内容是我根据已经查到的资料整理的，你核对一下。";
+  const note = "# 孝心安8号\n\n## 卖点\n- 保障意外";
+  const { result, journal } = await runCase(Harness, [
+    { contentText: toolBlock({ tool: "search_notes", query: "Alpha" }) },
+    { contentText: `${preface}\n${toolBlock({ tool: "search_notes", query: "Alpha 2" })}` },
+    { contentText: note }
+  ], {
+    maxRounds: 1,
+    handlers: [{ tool: "search_notes", status: "ok", content: "命中 1 篇笔记。" }]
+  });
+
+  assert.equal(result.toolCalls, 1, "the forced final round must not execute another tool");
+  assert.equal(result.exhausted, true);
+  assert.equal(journal.calls.length, 3, "forced final should add exactly one repair call");
+  assert.match(
+    journal.calls[2].messages[0].text,
+    /最终回答补正/,
+    "the repair call should carry its own system context"
+  );
+  assert.equal(
+    journal.calls[2].messages[journal.calls[2].messages.length - 1].role,
+    "user",
+    "the repair call should end with an explicit user nudge"
+  );
+  assert.ok(result.finalText.includes(preface), "the preface from the failed attempt should stay");
+  assert.ok(result.finalText.includes(note), "the repaired answer should reach the user");
+  assert.ok(
+    visibleText(journal).includes(`${preface}\n\n${note}`),
+    "the repaired answer must start a new paragraph instead of joining the preface"
+  );
+  assertNoProtocolInVisible(journal);
+}
+
+async function assertForcedFinalAnswerFallbackWhenRepairStillCallsTool(Harness) {
+  const { result, journal } = await runCase(Harness, [
+    { contentText: toolBlock({ tool: "search_notes", query: "Alpha" }) },
+    { contentText: `先说一句。\n${toolBlock({ tool: "read_note", path: "A.md" })}` },
+    { contentText: toolBlock({ tool: "read_note", path: "A.md" }) }
+  ], {
+    maxRounds: 1,
+    handlers: [{ tool: "search_notes", status: "ok", content: "命中 1 篇笔记。" }]
+  });
+
+  assert.equal(result.toolCalls, 1);
+  assert.match(result.finalText, /先说一句。/);
+  assert.match(
+    result.finalText,
+    new RegExp(Harness.AGENT_TOOL_LOOP_FALLBACK_TEXT),
+    "a repair that only yields another tool block should tell the user there is no answer"
+  );
+  assertNoProtocolInVisible(journal);
+}
+
 async function main() {
   try {
     const Harness = await loadAgentToolLoopHarness();
@@ -781,6 +843,8 @@ async function main() {
     await assertMalformedThenRepairSucceeds(Harness);
     await assertMalformedTwiceFallsBack(Harness);
     await assertRoundExhaustionForcesFinal(Harness);
+    await assertForcedFinalAnswerRepairsToolAttempt(Harness);
+    await assertForcedFinalAnswerFallbackWhenRepairStillCallsTool(Harness);
     await assertDuplicateSkipsAndForcesFinal(Harness);
     await assertToolThrowContinues(Harness);
     await assertToolErrorResultContinues(Harness);

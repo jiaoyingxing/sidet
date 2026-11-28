@@ -1,6 +1,5 @@
 import { App, normalizePath, TFile } from "obsidian";
 import { ensureFolder } from "../../shared/paths";
-import { buildNormalizedWikiMarkdownFromPath, isWikiNotePath } from "../wiki/wiki-note-schema";
 
 export type AgentActionKind =
   | "create-note"
@@ -83,10 +82,7 @@ export class AgentActionExecutor {
   async execute(preview: AgentActionPreview, input: AgentActionInput): Promise<AgentActionResult> {
     const targetPath = normalizeAgentActionTargetPath(input.targetPath);
     await this.flushOpenEditors(targetPath);
-    const rawContent = input.content.trim();
-    const content = (preview.kind === "create-note" || preview.kind === "replace-note") && isWikiNotePath(targetPath)
-      ? buildNormalizedWikiMarkdownFromPath(targetPath, rawContent, {}, { preserveUpdatedAt: false })
-      : rawContent;
+    const content = input.content.trim();
     if (!targetPath) {
       throw new Error("目标路径无效，已取消写入。");
     }

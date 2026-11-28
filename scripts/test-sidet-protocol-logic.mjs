@@ -145,8 +145,8 @@ function assertResearchPrompts(promptModule) {
     4
   );
   assert.match(queryContext, /当前日期：2026年11月25日/);
-  assert.match(queryContext, /2 到 4 组/);
-  assert.match(queryContext, /每行一组/);
+  assert.match(queryContext, /先理解再搜索/);
+  assert.match(queryContext, /2 到 4 条可直接搜索的短查询/);
   assert.match(queryContext, /测试问题/);
 
   const evidenceContext = promptModule.buildSidetResearchEvidenceContext("测试问题", 4000);

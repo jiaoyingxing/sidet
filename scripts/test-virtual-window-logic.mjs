@@ -185,25 +185,6 @@ async function main() {
       }),
       "source titles do not change the footer height; only the count should"
     );
-    const routingMessage = {
-      ...message,
-      knowledgeBaseRouting: {
-        mode: "single",
-        displayName: "测试库",
-        status: "complete",
-        resultCount: 1,
-        hits: []
-      }
-    };
-    assert.notEqual(
-      virtual.buildVirtualMessageHeightSignature({
-        ...routingMessage,
-        knowledgeBaseRouting: { ...routingMessage.knowledgeBaseRouting, resultCount: 2 }
-      }),
-      virtual.buildVirtualMessageHeightSignature(routingMessage),
-      "knowledge base routing result growth should invalidate the height cache"
-    );
-
     console.log("virtual window logic passed");
   } finally {
     for (const tempDir of tempDirs) {

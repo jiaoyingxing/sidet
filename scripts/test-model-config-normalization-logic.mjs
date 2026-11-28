@@ -101,6 +101,7 @@ async function main() {
   assert.equal(normalizeSettings({}).webSearchMode, "auto", "缺省应打开自动联网");
   assert.equal(normalizeSettings({ webSearchMode: "off" }).webSearchMode, "off");
   assert.equal(normalizeSettings({ webSearchMode: "bogus" }).webSearchMode, "auto");
+  assert.equal(normalizeSettings({ webSearchMode: "on" }).webSearchMode, "auto", "旧版 on 应迁移为自动联网");
 
   console.log("model config normalization logic: ok");
 }

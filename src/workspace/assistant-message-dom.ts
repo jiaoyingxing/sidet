@@ -7,7 +7,7 @@
  */
 
 const MESSAGE_CONTENT_SELECTOR = ".sidet-message-content";
-const INLINE_ACTION_SELECTOR = ".sidet-agent-inline-action, .sidet-wiki-plan-followup";
+const INLINE_ACTION_SELECTOR = ".sidet-agent-inline-action";
 const ANSWER_SOURCES_SELECTOR = ".sidet-answer-sources";
 const ANSWER_VERSIONS_SELECTOR = ".sidet-answer-versions";
 const ANSWER_ACTIONS_SELECTOR = ".sidet-answer-actions, .sidet-answer-error";

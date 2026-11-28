@@ -11,6 +11,7 @@ import {
   parseSidetResearchBlock,
   stripSidetProtocolBlocks
 } from "./sidet-protocol";
+import type { ResearchAttemptSummary } from "./web-search-runtime-policy";
 
 export interface ResearchLoopState {
   pages: ResearchPage[];
@@ -18,6 +19,8 @@ export interface ResearchLoopState {
   lastProviderLabel: string;
   lastQuestion: string;
   queries: string[];
+  /** 每轮试过的查询与命中站点；供下一轮检索前理解换角度。 */
+  attempts: ResearchAttemptSummary[];
 }
 
 export interface WebResearchLoopOptions {
@@ -28,10 +31,13 @@ export interface WebResearchLoopOptions {
   callDecisionModel: (messages: MessageRecord[]) => Promise<{
     contentText: string;
     reasoningText: string;
+    /** 调用方是否已经把可见正文边生成边写给用户；为 true 时循环不再整段补写。 */
+    visibleContentStreamed?: boolean;
   }>;
   callRepairModel: (messages: MessageRecord[]) => Promise<{
     contentText: string;
     reasoningText: string;
+    visibleContentStreamed?: boolean;
   }>;
   runResearchRound: (
     round: number,
@@ -46,6 +52,11 @@ export interface WebResearchLoopOptions {
   ) => Promise<string>;
   onVisibleContent: (text: string) => void;
   commitSources: (state: ResearchLoopState) => void;
+  /**
+   * 决策阶段由调用方边生成边显示正文。开启后来源在每次决策前提交，
+   * 最终文本不再由循环整段 append，避免同一段答案出现两次。
+   */
+  streamDecisionContent?: boolean;
   signal: AbortSignal;
   budgets?: ResearchBudgetOptions;
   now?: () => number;
@@ -69,7 +80,8 @@ export function createResearchLoopState(initialQuestion: string): ResearchLoopSt
     lastSearchResults: [],
     lastProviderLabel: "Sidet",
     lastQuestion: initialQuestion,
-    queries: []
+    queries: [],
+    attempts: []
   };
 }
 
@@ -110,9 +122,16 @@ export async function runWebResearchLoop(
     ...options.baseMessages
   ];
 
-  const finishWithVisibleText = (text: string): WebResearchLoopResult => {
-    options.commitSources(state);
-    options.onVisibleContent(text);
+  const finishWithVisibleText = (
+    text: string,
+    streamed: boolean
+  ): WebResearchLoopResult => {
+    if (!options.streamDecisionContent) {
+      options.commitSources(state);
+    }
+    if (!streamed) {
+      options.onVisibleContent(text);
+    }
     return {
       finalText: text,
       aborted: false,
@@ -152,9 +171,16 @@ export async function runWebResearchLoop(
     };
   }
   appendRoundResult(transcript, state, roundResult, options.createMessage);
+  if (options.streamDecisionContent) {
+    options.commitSources(state);
+  }
 
   let repairUsed = false;
-  let pendingReply: { contentText: string; reasoningText: string } | null = null;
+  let pendingReply: {
+    contentText: string;
+    reasoningText: string;
+    visibleContentStreamed?: boolean;
+  } | null = null;
   let decisionSteps = 0;
   const maxDecisionSteps = budget.options.maxRounds + 2;
 
@@ -227,11 +253,14 @@ export async function runWebResearchLoop(
         };
       }
       appendRoundResult(transcript, state, roundResult, options.createMessage);
+      if (options.streamDecisionContent) {
+        options.commitSources(state);
+      }
       continue;
     }
 
     if (visibleText) {
-      return finishWithVisibleText(visibleText);
+      return finishWithVisibleText(visibleText, Boolean(reply.visibleContentStreamed));
     }
 
     if (repairUsed) {

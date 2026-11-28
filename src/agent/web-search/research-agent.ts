@@ -1,9 +1,12 @@
 import type { WebSearchResult } from "../../context/web-search-service";
+import { passesQueryCoverage } from "../../context/web-search-ranking";
 import { trimContextTextToBudget } from "../context-bundle";
 import { buildSidetResearchResultBlock } from "./sidet-protocol";
 import {
   buildFallbackSearchQueries,
-  normalizeSearchQueries
+  normalizeSearchQueries,
+  sanitizeResearchQueries,
+  type ResearchAttemptSummary
 } from "./web-search-runtime-policy";
 
 export interface ResearchBudgetOptions {
@@ -33,6 +36,12 @@ export const DEFAULT_RESEARCH_BUDGET: ResolvedResearchBudgetOptions = {
   maxSourceInputChars: 60_000,
   maxPageContentChars: 20_000
 };
+
+/**
+ * 首轮显式研究允许直接交给回答模型的原文证据上限。
+ * 超过这个量才回到压缩调用，避免小证据也为一次模型总结多等一轮。
+ */
+export const FAST_RESEARCH_EVIDENCE_CHARS = 8_000;
 
 export interface ResearchBudget {
   readonly options: ResolvedResearchBudgetOptions;
@@ -131,6 +140,8 @@ export interface ResearchPage {
   host: string;
   content: string;
   snippet?: string;
+  /** 页面可见日期或搜索结果日期；只作时效判断，不保证是发布时间。 */
+  publishedAt?: string;
 }
 
 export interface ResearchRoundResult {
@@ -159,7 +170,13 @@ export interface WebResearchRoundOptions {
   alreadyFetchedUrls: ReadonlySet<string>;
   sourceStart: number;
   signal: AbortSignal;
-  expandQueries: (question: string, maxQueries: number) => Promise<string>;
+  /** 之前轮次试过的查询与命中站点；用于让本轮换角度，而不是复读。 */
+  previousAttempts?: readonly ResearchAttemptSummary[];
+  expandQueries: (
+    question: string,
+    maxQueries: number,
+    previousAttempts: readonly ResearchAttemptSummary[]
+  ) => Promise<string>;
   searchMany: (
     queries: string[],
     onProgress?: (event: { message: string }) => void
@@ -169,8 +186,18 @@ export interface WebResearchRoundOptions {
     url: string;
     content: string;
     snippet?: string;
+    publishedAt?: string;
   }>;
   compressEvidence: (question: string, evidenceInput: string, maxChars: number) => Promise<string>;
+  /**
+   * 本轮证据正文上限；默认沿用预算里的 `maxEvidenceChars`。
+   * 首轮快路会把原始证据放宽到这个值，不再额外压缩。
+   */
+  evidenceCharLimit?: number;
+  /** 证据压缩提示词与压缩结果的上限；默认沿用预算里的 `maxEvidenceChars`。 */
+  compressionCharLimit?: number;
+  /** 原文证据不超过 `evidenceCharLimit` 时跳过压缩模型调用。 */
+  skipCompressionWhenFits?: boolean;
   onProgress?: (event: ResearchRoundProgress) => void;
   now?: () => number;
 }
@@ -218,6 +245,31 @@ function hasBinaryExtension(rawUrl: string): boolean {
   }
 }
 
+/** 查询项兼容纯字符串和 `{query|q|text}` 对象，避免模型换一种写法就解析失败。 */
+function coerceQueryItem(item: unknown): string | null {
+  if (typeof item === "string") {
+    return item;
+  }
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+  const record = item as Record<string, unknown>;
+  for (const key of ["query", "q", "text", "keywords"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function collectQueryItems(items: unknown[], maxQueries: number): string[] {
+  const strings = items
+    .map((item) => coerceQueryItem(item))
+    .filter((item): item is string => Boolean(item));
+  return dedupeQueryLines(strings, maxQueries);
+}
+
 /**
  * 从模型输出里提取查询行。兼容 `query1: ...`、`1. ...`、`- ...` 和纯文本行；
  * 解析不出时返回空数组，由调用方走确定性兜底。
@@ -228,21 +280,46 @@ export function parseResearchQueries(rawText: string, maxQueries: number): strin
     return [];
   }
 
-  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+  const withoutFences = trimmed
+    .replace(/```[a-z-]*\s*/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  // 检索前理解约定输出 { intent, ambiguities, queries }；旧格式可能仍是纯数组或逐行。
+  const jsonCandidates = [withoutFences];
+  const objectStart = withoutFences.indexOf("{");
+  const objectEnd = withoutFences.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    jsonCandidates.push(withoutFences.slice(objectStart, objectEnd + 1));
+  }
+  for (const candidate of jsonCandidates) {
     try {
-      const parsed: unknown = JSON.parse(trimmed);
+      const parsed: unknown = JSON.parse(candidate);
       if (Array.isArray(parsed)) {
-        const items = parsed.filter((item: unknown): item is string => typeof item === "string");
-        return dedupeQueryLines(items, maxQueries);
+        const queries = collectQueryItems(parsed, maxQueries);
+        if (queries.length > 0) {
+          return queries;
+        }
+      }
+      if (
+        parsed
+        && typeof parsed === "object"
+        && Array.isArray((parsed as { queries?: unknown }).queries)
+      ) {
+        const queries = collectQueryItems((parsed as { queries: unknown[] }).queries, maxQueries);
+        if (queries.length > 0) {
+          return queries;
+        }
       }
     } catch {
-      // 不是合法 JSON 时继续按行解析。
+      // 继续尝试下一个候选或按行解析。
     }
   }
 
-  const withoutFences = trimmed
-    .replace(/```[a-z-]*\s*/gi, "")
-    .replace(/```/g, "");
+  if (withoutFences.startsWith("{")) {
+    return [];
+  }
+
   const lines = withoutFences.split(/\r?\n/);
   return dedupeQueryLines(lines, maxQueries);
 }
@@ -386,6 +463,172 @@ export function buildFallbackResearchEvidence(
   return trimContextTextToBudget(lines.join("\n").trim(), maxChars, "[证据已截断]").text;
 }
 
+/** 单页交给证据模型的相关段落预算；比整页上限小得多，避免导航和页脚占满输入。 */
+const EVIDENCE_PASSAGE_PAGE_BUDGET = 6_000;
+const EVIDENCE_PASSAGE_MAX_CHARS = 1_200;
+
+function splitLongLine(line: string): string[] {
+  const chunks: string[] = [];
+  let rest = line.trim();
+  while (rest.length > EVIDENCE_PASSAGE_MAX_CHARS) {
+    const window = rest.slice(0, EVIDENCE_PASSAGE_MAX_CHARS);
+    let cut = -1;
+    for (const match of window.matchAll(/[。！？!?；;]\s*/g)) {
+      cut = (match.index ?? 0) + match[0].length;
+    }
+    if (cut <= 0) {
+      cut = EVIDENCE_PASSAGE_MAX_CHARS;
+    }
+    chunks.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) {
+    chunks.push(rest);
+  }
+  return chunks;
+}
+
+function splitIntoEvidenceBlocks(content: string): string[] {
+  const blocks: string[] = [];
+  for (const rawBlock of content.split(/\n{2,}/)) {
+    const block = rawBlock.trim();
+    if (!block) {
+      continue;
+    }
+    if (block.length <= EVIDENCE_PASSAGE_MAX_CHARS) {
+      blocks.push(block);
+      continue;
+    }
+    for (const line of block.split(/\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      blocks.push(...splitLongLine(trimmed));
+    }
+  }
+  return blocks;
+}
+
+function collectPassageMatchTokens(query: string): string[] {
+  const tokens = new Set<string>();
+  for (const match of query.matchAll(/[A-Za-z0-9][A-Za-z0-9._+-]*/g)) {
+    const token = match[0].toLowerCase();
+    if (token.length >= 2) {
+      tokens.add(token);
+    }
+  }
+  for (const segment of query.match(/[\u4e00-\u9fff]{2,}/g) ?? []) {
+    tokens.add(segment);
+    // 中文查询常以长词出现，补二元片段提高段落命中率。
+    for (let index = 0; index < segment.length - 1; index += 1) {
+      tokens.add(segment.slice(index, index + 2));
+    }
+  }
+  return Array.from(tokens);
+}
+
+/**
+ * 从整页 Markdown 里挑与问题相关的段落。
+ *
+ * 搜索页常见的导航、推荐位、页脚在正文里占很大比例；整页截断会把真正
+ * 回答问题的段落挤掉。这里按查询词命中排序，再按原文顺序拼回，保留上下文。
+ */
+export function selectRelevantPassages(
+  markdown: string,
+  query: string,
+  maxChars: number
+): string {
+  const blocks = splitIntoEvidenceBlocks(markdown);
+  if (blocks.length === 0) {
+    return "";
+  }
+  const budget = Math.max(400, Math.trunc(maxChars));
+  const tokens = collectPassageMatchTokens(query);
+  const scored = blocks.map((block, index) => {
+    const normalizedBlock = block.toLowerCase();
+    let score = 0;
+    for (const token of tokens) {
+      if (normalizedBlock.includes(token)) {
+        score += 1;
+      }
+    }
+    if (index === 0) {
+      // 首段通常是定义、摘要或发布时间，先给一点基础分。
+      score += 1.5;
+    }
+    return { index, score };
+  });
+
+  const selected = new Set<number>();
+  let usedChars = 0;
+  const take = (index: number): void => {
+    if (index < 0 || index >= blocks.length || selected.has(index)) {
+      return;
+    }
+    const length = (blocks[index] ?? "").length + 2;
+    if (usedChars + length > budget && usedChars > 0) {
+      return;
+    }
+    selected.add(index);
+    usedChars += length;
+  };
+
+  for (const item of [...scored].sort((left, right) => right.score - left.score || left.index - right.index)) {
+    if (usedChars >= budget) {
+      break;
+    }
+    if (item.score <= 0 && selected.size > 0) {
+      continue;
+    }
+    take(item.index);
+    take(item.index - 1);
+    take(item.index + 1);
+  }
+
+  if (selected.size === 0) {
+    for (let index = 0; index < blocks.length && usedChars < budget; index += 1) {
+      take(index);
+    }
+  }
+
+  return trimContextTextToBudget(
+    Array.from(selected)
+      .sort((left, right) => left - right)
+      .map((index) => blocks[index])
+      .join("\n\n"),
+    budget,
+    "[相关段落已截断]"
+  ).text;
+}
+
+const CONTENT_DATE_PATTERN = /(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?/;
+
+/**
+ * 从正文开头提取页面日期。只取前 600 字，避免把正文里的历史日期当成发布时间。
+ */
+export function extractContentDate(content: string): string | null {
+  const match = content.slice(0, 600).match(CONTENT_DATE_PATTERN);
+  if (!match) {
+    return null;
+  }
+  const year = Number.parseInt(match[1] ?? "", 10);
+  const month = Number.parseInt(match[2] ?? "", 10);
+  const day = Number.parseInt(match[3] ?? "", 10);
+  if (
+    !Number.isFinite(year)
+    || year < 1990
+    || year > 2100
+    || month < 1
+    || month > 12
+    || day < 1
+    || day > 31
+  ) {
+    return null;
+  }
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 function buildEvidenceInput(
   question: string,
   results: WebSearchResult[],
@@ -400,14 +643,14 @@ function buildEvidenceInput(
   if (pages.length > 0) {
     lines.push("已读网页：");
     for (const page of pages) {
-      const content = trimContextTextToBudget(
-        page.content,
-        options.maxPageContentChars,
-        "[本页正文过长，已截断]"
-      ).text;
+      const pageBudget = Math.min(options.maxPageContentChars, EVIDENCE_PASSAGE_PAGE_BUDGET);
+      const content = page.content.length > pageBudget
+        ? selectRelevantPassages(page.content, question, pageBudget)
+        : page.content;
       lines.push(
         `[${page.sourceIndex}] ${page.title}`,
         `URL: ${page.url}`,
+        ...(page.publishedAt ? [`日期: ${page.publishedAt}`] : []),
         `摘要: ${page.snippet?.trim() || "无"}`,
         "正文:",
         content,
@@ -422,6 +665,7 @@ function buildEvidenceInput(
       lines.push(
         `- ${result.title}`,
         `  URL: ${result.url}`,
+        ...(result.publishedAt ? [`  日期: ${result.publishedAt}`] : []),
         `  摘要: ${result.snippet.trim() || "无"}`
       );
     }
@@ -501,20 +745,39 @@ export async function runWebResearchRound(
     budget.remainingQueries()
   );
 
+  const previousAttempts = options.previousAttempts ?? [];
+  const allowDownloadWords = /下载|安装|客户端|\bapp\b|\bapk\b|\bipa\b/i.test(question);
   let queries: string[] = [];
   if (maxQueriesThisRound > 0 && budget.chargeModelCall()) {
     try {
-      const rawQueries = await options.expandQueries(question, maxQueriesThisRound);
-      queries = parseResearchQueries(rawQueries, maxQueriesThisRound);
+      const rawQueries = await options.expandQueries(question, maxQueriesThisRound, previousAttempts);
+      const parsedQueries = parseResearchQueries(
+        rawQueries,
+        Math.min(maxQueriesThisRound * 2, 8)
+      );
+      queries = sanitizeResearchQueries(parsedQueries, {
+        limit: maxQueriesThisRound,
+        previousQueries: previousAttempts.flatMap((attempt) => attempt.queries),
+        allowDownloadWords
+      });
+      if (parsedQueries.length > queries.length) {
+        progress(
+          "queries",
+          `已丢弃 ${parsedQueries.length - queries.length} 条过长、重复或含无关词的查询。`
+        );
+      }
     } catch (error) {
       progress("warning", `查询扩展失败：${toErrorMessage(error)}`);
     }
   }
 
   if (queries.length === 0) {
-    queries = normalizeSearchQueries(buildFallbackSearchQueries(question), {
-      limit: maxQueriesThisRound
-    });
+    queries = sanitizeResearchQueries(
+      normalizeSearchQueries(buildFallbackSearchQueries(question), {
+        limit: maxQueriesThisRound * 2
+      }),
+      { limit: maxQueriesThisRound, allowDownloadWords }
+    );
   }
   if (queries.length === 0) {
     queries = normalizeSearchQueries([question], { limit: maxQueriesThisRound });
@@ -554,7 +817,19 @@ export async function runWebResearchRound(
     progress("warning", `搜索失败：${searchError}`);
   }
 
-  progress("search", `合并结果：${results.length} 条。`);
+  // 搜索源“没有结果”时经常返回别的热门页；先按问题与查询覆盖率丢掉明显无关的。
+  const coverageAnchors = [question, ...queries];
+  const relevantResults = results.filter((result) =>
+    coverageAnchors.some((anchor) => passesQueryCoverage(result, anchor))
+  );
+  const droppedResultCount = results.length - relevantResults.length;
+  results = relevantResults;
+  progress(
+    "search",
+    droppedResultCount > 0
+      ? `合并结果：${results.length} 条（丢弃 ${droppedResultCount} 条与问题无关的结果）。`
+      : `合并结果：${results.length} 条。`
+  );
 
   if (budget.isExpired()) {
     const reason = budget.exhaustedReason() ?? "检索预算已用完。";
@@ -604,13 +879,18 @@ export async function runWebResearchRound(
     if (!outcome.page) {
       continue;
     }
+    const pageUrl = outcome.page.url || outcome.result.url;
     pages.push({
       sourceIndex: options.sourceStart + pages.length,
       title: outcome.page.title || outcome.result.title,
-      url: outcome.page.url || outcome.result.url,
-      host: resolveHost(outcome.page.url || outcome.result.url),
+      url: pageUrl,
+      host: resolveHost(pageUrl),
       content: outcome.page.content,
-      snippet: outcome.page.snippet ?? outcome.result.snippet
+      snippet: outcome.page.snippet ?? outcome.result.snippet,
+      publishedAt: outcome.page.publishedAt
+        ?? outcome.result.publishedAt
+        ?? extractContentDate(outcome.page.content)
+        ?? undefined
     });
   }
   const failedPageCount = pagesToFetch.length - pages.length;
@@ -631,18 +911,33 @@ export async function runWebResearchRound(
     );
   }
 
-  let evidenceText = "";
+  const evidenceCharLimit = options.evidenceCharLimit ?? budget.options.maxEvidenceChars;
+  const compressionCharLimit = options.compressionCharLimit ?? budget.options.maxEvidenceChars;
   const hasSearchMaterial = pages.length > 0 || results.length > 0;
-  if (hasSearchMaterial && !budget.isExpired() && budget.chargeModelCall()) {
+  const evidenceInput = hasSearchMaterial
+    ? buildEvidenceInput(question, results, pages, budget.options)
+    : "";
+
+  let evidenceText = "";
+  const canUseRawEvidence = options.skipCompressionWhenFits === true
+    && evidenceInput.length > 0
+    && evidenceInput.length <= evidenceCharLimit;
+  if (canUseRawEvidence) {
+    evidenceText = trimContextTextToBudget(
+      evidenceInput,
+      evidenceCharLimit,
+      "[证据已截断]"
+    ).text;
+  } else if (hasSearchMaterial && !budget.isExpired() && budget.chargeModelCall()) {
     try {
       const compressed = await options.compressEvidence(
         question,
-        buildEvidenceInput(question, results, pages, budget.options),
-        budget.options.maxEvidenceChars
+        evidenceInput,
+        compressionCharLimit
       );
       evidenceText = trimContextTextToBudget(
         compressed.trim(),
-        budget.options.maxEvidenceChars,
+        compressionCharLimit,
         "[证据已截断]"
       ).text;
     } catch (error) {
@@ -655,7 +950,7 @@ export async function runWebResearchRound(
       question,
       results,
       pages,
-      budget.options.maxEvidenceChars
+      evidenceCharLimit
     );
     progress("warning", "证据整理为空，已使用确定性摘要兜底。");
   }
@@ -677,6 +972,11 @@ export async function runWebResearchRound(
       sourceIndex: page.sourceIndex,
       title: page.title,
       url: page.url
+    })),
+    searchResults: results.map((result) => ({
+      title: result.title,
+      url: result.url,
+      snippet: result.snippet
     })),
     evidenceText
   });

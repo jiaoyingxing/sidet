@@ -1,6 +1,7 @@
 import { requestUrl } from "obsidian";
 import {
   mergeRankedSearchBatches,
+  passesQueryCoverage,
   type SearchResultBatch
 } from "./web-search-ranking";
 
@@ -9,6 +10,8 @@ export interface WebSearchResult {
   url: string;
   host: string;
   snippet: string;
+  /** 搜索结果自带的日期（RSS pubDate 等），格式为 YYYY-MM-DD。 */
+  publishedAt?: string;
 }
 
 export interface WebSearchProgressEvent {
@@ -16,7 +19,7 @@ export interface WebSearchProgressEvent {
   message: string;
 }
 
-type SearchProviderId = "bing" | "baidu" | "sogou" | "github";
+type SearchProviderId = "quark" | "bing" | "baidu" | "sogou" | "so" | "mwmbl" | "github";
 
 interface SearchCacheEntry {
   expiresAt: number;
@@ -45,6 +48,8 @@ interface SearchOptions {
   onProgress?: (event: WebSearchProgressEvent) => void;
   /** 单次 searchMany 最多执行多少组查询；默认沿用 3，检索研究路径可放宽到 4。 */
   maxQueries?: number;
+  /** 已有搜索源返回后，等待其余来源的宽限时间；超时的来源本轮跳过。 */
+  providerGraceMs?: number;
 }
 
 interface ProviderHealthState {
@@ -67,10 +72,24 @@ const WEB_SEARCH_MAX_RESULTS = 12;
 const WEB_SEARCH_MAX_QUERIES = 3;
 const WEB_SEARCH_MAX_QUERIES_HARD_LIMIT = 6;
 const WEB_SEARCH_PROVIDER_TIMEOUT_MS = 6000;
+/**
+ * 已有来源成功返回后，给其余来源的宽限时间。
+ * 单个来源卡住时不再拖满 6 秒，但也不会一有结果就掐掉更慢的权威来源。
+ */
+const WEB_SEARCH_PROVIDER_GRACE_MS = 1500;
 const WEB_SEARCH_IMPORT_HOST = "sidet.invalid";
 const WEB_SEARCH_IMPORT_PATH = "/web-search-import";
 const DEFAULT_ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.8";
 const DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Sidet/0.2.0 Safari/537.36";
+/**
+ * 结果页抓取用普通浏览器 UA。
+ *
+ * 宿主的 Electron UA（含 Obsidian / Sidet 标识）会被 360 等结果页判定为异常访问，
+ * 直接返回“访问异常页面”；这里只影响搜索请求，不参与宿主或平台判断。
+ */
+const SEARCH_BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+/** 移动结果页用 iPhone UA；部分中文入口只在移动 UA 下返回结果，桌面 UA 会跳验证页。 */
+const SEARCH_MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
 // 透传运行时真实 UA 作为请求头（非 OS 检测，Platform API 无 UA 等价物）。
 // obsidianmd/platform 仅匹配 navigator.userAgent / window.navigator.userAgent 两种字面形态，
@@ -93,6 +112,11 @@ const SOGOU_BLOCKED_RESULT_HOSTS = new Set([
   "sogou.com",
   "www.sogou.com",
   "wap.sogou.com"
+]);
+const SO_BLOCKED_RESULT_HOSTS = new Set([
+  "so.com",
+  "m.so.com",
+  "www.so.com"
 ]);
 const GITHUB_QUERY_HINTS = [
   /\bgithub\b/i,
@@ -166,6 +190,83 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
       window.clearTimeout(timer);
     }
   }
+}
+
+interface ProviderOutcome {
+  provider: SearchProvider;
+  results?: WebSearchResult[];
+  error?: unknown;
+  skipped?: boolean;
+}
+
+/**
+ * 并行执行搜索源，并在“已有来源成功”后开始宽限计时。
+ *
+ * 全部来源提前返回时立即结束，不额外等待；某个来源卡住时最多再等
+ * `graceMs`，避免一次 6 秒超时拖住整轮检索。被跳过的来源不记失败，
+ * 下一轮仍会正常参与。
+ */
+async function collectProviderOutcomes(
+  providers: SearchProvider[],
+  run: (provider: SearchProvider) => Promise<WebSearchResult[]>,
+  graceMs: number
+): Promise<ProviderOutcome[]> {
+  if (providers.length === 0) {
+    return [];
+  }
+
+  const outcomes = Array.from<ProviderOutcome | undefined>({ length: providers.length });
+  let settledCount = 0;
+  let graceTimer: number | null = null;
+  let graceStarted = false;
+  let waitFinished = false;
+  let resolveWait: () => void = () => {};
+  const waitDone = new Promise<void>((resolve) => {
+    resolveWait = resolve;
+  });
+
+  const finishWait = (): void => {
+    if (waitFinished) {
+      return;
+    }
+    waitFinished = true;
+    if (graceTimer !== null) {
+      window.clearTimeout(graceTimer);
+      graceTimer = null;
+    }
+    resolveWait();
+  };
+
+  providers.forEach((provider, index) => {
+    void run(provider).then(
+      (results) => {
+        outcomes[index] = { provider, results };
+      },
+      (error) => {
+        outcomes[index] = { provider, error };
+      }
+    ).then(() => {
+      settledCount += 1;
+      if (settledCount >= providers.length) {
+        finishWait();
+        return;
+      }
+      if (waitFinished) {
+        return;
+      }
+      if (!graceStarted && outcomes.some((outcome) => (outcome?.results?.length ?? 0) > 0)) {
+        graceStarted = true;
+        graceTimer = window.setTimeout(finishWait, Math.max(0, graceMs));
+      }
+    });
+  });
+
+  await waitDone;
+  // 用 Array.from 而不是 outcomes.map：慢来源离场时数组是稀疏的，map 会跳过空位。
+  return Array.from({ length: providers.length }, (_unused, index) => outcomes[index] ?? {
+    provider: providers[index],
+    skipped: true
+  });
 }
 
 function isNewsIntentQuery(query: string): boolean {
@@ -245,6 +346,110 @@ function collectBingResults(doc: Document): WebSearchResult[] {
       url: normalizedUrl,
       host,
       snippet: takeSnippetText(item, anchor.textContent ?? "", [".b_caption p", ".b_snippet", "p"])
+    });
+    seen.add(normalizedUrl);
+    if (results.length >= WEB_SEARCH_MAX_RESULTS) {
+      break;
+    }
+  }
+
+  return results;
+}
+
+function stripHtmlTags(text: string): string {
+  return normalizeWhitespace(text.replace(/<[^>]*>/g, " "));
+}
+
+function normalizePublishedAt(rawValue: string): string | undefined {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  // 中文界面下 Bing RSS 的 pubDate 形如“周五, 27 11月 2026 09:59:00 GMT”，
+  // Date.parse 不认识；先单独解析这种本地化格式，再退回标准解析。
+  const localizedMatch = trimmed.match(
+    /(\d{1,2})\s+(\d{1,2})月\s+(\d{4})/
+  );
+  if (localizedMatch) {
+    const day = Number.parseInt(localizedMatch[1] ?? "", 10);
+    const month = Number.parseInt(localizedMatch[2] ?? "", 10);
+    const year = Number.parseInt(localizedMatch[3] ?? "", 10);
+    if (year >= 1990 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  const timestamp = Date.parse(trimmed);
+  if (Number.isNaN(timestamp)) {
+    return undefined;
+  }
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+  // 用 UTC 日期，避免时区把 pubDate 的“当天”挪前一天。
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+}
+
+function decodeXmlEntities(text: string): string {
+  return text
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&#x([0-9a-f]+);/gi, (match, hex: string) => {
+      const codePoint = Number.parseInt(hex, 16);
+      return Number.isFinite(codePoint) && codePoint > 0 && codePoint <= 0x10ffff
+        ? String.fromCodePoint(codePoint)
+        : match;
+    })
+    .replace(/&#(\d+);/g, (match, decimal: string) => {
+      const codePoint = Number.parseInt(decimal, 10);
+      return Number.isFinite(codePoint) && codePoint > 0 && codePoint <= 0x10ffff
+        ? String.fromCodePoint(codePoint)
+        : match;
+    })
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function takeXmlTag(block: string, tag: string): string {
+  const match = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i"));
+  return match?.[1] ? decodeXmlEntities(match[1]).trim() : "";
+}
+
+/**
+ * Bing 的 RSS 结果页是结构化 XML，比解析 `li.b_algo` 稳得多，也带发布日期。
+ *
+ * 这里用标签级解析而不是 DOMParser：RSS 结构固定，正则足够，且桌面 /
+ * 移动宿主与测试环境行为一致。返回空数组表示这次不是 RSS（例如被重定向
+ * 到 HTML），由调用方退回 HTML 解析。
+ */
+export function parseBingRssResults(xml: string): WebSearchResult[] {
+  if (!/<item[\s>]/i.test(xml)) {
+    return [];
+  }
+
+  const results: WebSearchResult[] = [];
+  const seen = new Set<string>();
+  for (const match of xml.matchAll(/<item[\s>][\s\S]*?<\/item>/gi)) {
+    const block = match[0];
+    const normalizedUrl = normalizeHttpUrl(takeXmlTag(block, "link"));
+    if (!normalizedUrl || seen.has(normalizedUrl)) {
+      continue;
+    }
+    const host = new URL(normalizedUrl).hostname.toLowerCase();
+    if (BING_BLOCKED_RESULT_HOSTS.has(host)) {
+      continue;
+    }
+    const title = stripHtmlTags(takeXmlTag(block, "title"));
+    results.push({
+      title: normalizeResultTitle(title, normalizedUrl),
+      url: normalizedUrl,
+      host,
+      snippet: stripHtmlTags(takeXmlTag(block, "description")).slice(0, 220),
+      publishedAt: normalizePublishedAt(takeXmlTag(block, "pubDate"))
     });
     seen.add(normalizedUrl);
     if (results.length >= WEB_SEARCH_MAX_RESULTS) {
@@ -348,11 +553,216 @@ function collectSogouResults(doc: Document): WebSearchResult[] {
   return results;
 }
 
+/**
+ * 360 结果页把真实地址包在 `m.so.com/jump?u=...` 里；解包失败或仍指向
+ * 360 自身时丢弃，避免把跳转链当成来源。
+ */
+export function resolveSoResultUrl(rawHref: string): string | null {
+  const direct = normalizeHttpUrl(rawHref);
+  if (direct) {
+    const host = new URL(direct).hostname.toLowerCase();
+    if (!SO_BLOCKED_RESULT_HOSTS.has(host)) {
+      return direct;
+    }
+  }
+
+  try {
+    const url = new URL(rawHref, "https://m.so.com");
+    if (url.pathname !== "/jump") {
+      return null;
+    }
+    const normalized = normalizeHttpUrl(url.searchParams.get("u") ?? "");
+    if (!normalized) {
+      return null;
+    }
+    const host = new URL(normalized).hostname.toLowerCase();
+    return SO_BLOCKED_RESULT_HOSTS.has(host) ? null : normalized;
+  } catch {
+    return null;
+  }
+}
+
+const SO_LOW_VALUE_TITLE_PATTERN = /相关软件|相关搜索|猜您关注|其他人还搜|大家还在搜|相关推荐/i;
+const SO_ANOMALY_PATTERN = /访问异常页面|请输入验证码|安全验证/;
+
+function collectSoResults(doc: Document): WebSearchResult[] {
+  // 360 触发风控时返回的是“访问异常页面”，不是空结果；按失败处理，
+  // 让 provider 健康度冷却而不是把验证页当成“没有结果”。
+  if (SO_ANOMALY_PATTERN.test(doc.body?.textContent ?? "")) {
+    throw new Error("360 返回验证页");
+  }
+
+  const results: WebSearchResult[] = [];
+  const seen = new Set<string>();
+
+  for (const titleElement of Array.from(doc.querySelectorAll("h3.res-title"))) {
+    const title = normalizeWhitespace(titleElement.textContent ?? "");
+    if (!title || SO_LOW_VALUE_TITLE_PATTERN.test(title)) {
+      continue;
+    }
+
+    const container = titleElement.closest("div.g-card, li")
+      ?? titleElement.parentElement?.parentElement
+      ?? titleElement.parentElement;
+    const anchor = titleElement.closest("a")
+      ?? container?.querySelector<HTMLAnchorElement>("a.alink[href], a[href]")
+      ?? null;
+    const normalizedUrl = resolveSoResultUrl(anchor?.getAttribute("href") ?? "");
+    if (!normalizedUrl || seen.has(normalizedUrl)) {
+      continue;
+    }
+
+    const host = new URL(normalizedUrl).hostname.toLowerCase();
+    results.push({
+      title,
+      url: normalizedUrl,
+      host,
+      snippet: takeSnippetText(container ?? titleElement, title, [
+        ".summary",
+        ".res-con",
+        ".res-con-flex",
+        "p",
+        "span"
+      ])
+    });
+    seen.add(normalizedUrl);
+    if (results.length >= WEB_SEARCH_MAX_RESULTS) {
+      break;
+    }
+  }
+
+  return results;
+}
+
+const QUARK_BLOCKED_RESULT_HOSTS = new Set([
+  "quark.sm.cn",
+  "m.sm.cn",
+  "page.sm.cn",
+  "so.com",
+  "m.so.com",
+  "www.so.com"
+]);
+
+/** 夸克结果把真实地址放在 `data-sc` JSON 的 `u` 字段；解包失败时退回锚点。 */
+export function resolveQuarkResultUrl(dataSc: string | null, fallbackHref: string): string | null {
+  let candidate = fallbackHref;
+  if (dataSc) {
+    try {
+      const parsed: unknown = JSON.parse(dataSc);
+      if (
+        parsed
+        && typeof parsed === "object"
+        && typeof (parsed as { u?: unknown }).u === "string"
+      ) {
+        candidate = (parsed as { u: string }).u;
+      }
+    } catch {
+      // 保留锚点兜底。
+    }
+  }
+
+  const normalized = normalizeHttpUrl(candidate);
+  if (!normalized) {
+    return null;
+  }
+  const host = new URL(normalized).hostname.toLowerCase();
+  return QUARK_BLOCKED_RESULT_HOSTS.has(host) ? null : normalized;
+}
+
+function collectQuarkResults(doc: Document): WebSearchResult[] {
+  const results: WebSearchResult[] = [];
+  const seen = new Set<string>();
+
+  for (const container of Array.from(doc.querySelectorAll("div.sc_natural_result"))) {
+    const title = normalizeWhitespace(container.querySelector(".qk-title-text")?.textContent ?? "");
+    const normalizedUrl = resolveQuarkResultUrl(
+      container.getAttribute("data-sc"),
+      container.querySelector<HTMLAnchorElement>("a[href]")?.href ?? ""
+    );
+    if (!title || !normalizedUrl || seen.has(normalizedUrl)) {
+      continue;
+    }
+
+    const source = Array.from(container.querySelectorAll(".qk-source-item"))
+      .map((element) => normalizeWhitespace(element.textContent ?? ""))
+      .filter(Boolean)
+      .join(" ");
+
+    results.push({
+      title,
+      url: normalizedUrl,
+      host: new URL(normalizedUrl).hostname.toLowerCase(),
+      snippet: source
+    });
+    seen.add(normalizedUrl);
+    if (results.length >= WEB_SEARCH_MAX_RESULTS) {
+      break;
+    }
+  }
+
+  return results;
+}
+
+interface MwmblFragment {
+  value?: string;
+}
+
+interface MwmblResult {
+  url?: string;
+  title?: MwmblFragment[];
+  extract?: MwmblFragment[];
+}
+
+/** Mwmbl 返回 `{url,title:[{value}],extract:[{value}]}` 数组，直接映射成统一结果。 */
+export function parseMwmblResults(payload: unknown): WebSearchResult[] {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+
+  const results: WebSearchResult[] = [];
+  const seen = new Set<string>();
+  for (const item of payload) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as MwmblResult;
+    const normalizedUrl = normalizeHttpUrl(record.url ?? "");
+    if (!normalizedUrl || seen.has(normalizedUrl)) {
+      continue;
+    }
+    const title = (record.title ?? [])
+      .map((part) => part?.value ?? "")
+      .join("")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!title) {
+      continue;
+    }
+    const snippet = (record.extract ?? [])
+      .map((part) => part?.value ?? "")
+      .join("")
+      .replace(/\s+/g, " ")
+      .trim();
+    results.push({
+      title,
+      url: normalizedUrl,
+      host: new URL(normalizedUrl).hostname.toLowerCase(),
+      snippet: snippet.slice(0, 220)
+    });
+    seen.add(normalizedUrl);
+    if (results.length >= WEB_SEARCH_MAX_RESULTS) {
+      break;
+    }
+  }
+
+  return results;
+}
+
 function buildHtmlHeaders(language: string): Record<string, string> {
   return {
     Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
     "Accept-Language": language || DEFAULT_ACCEPT_LANGUAGE,
-    "User-Agent": getRuntimeUserAgent()
+    "User-Agent": SEARCH_BROWSER_USER_AGENT
   };
 }
 
@@ -408,16 +818,21 @@ function buildHtmlProvider(config: {
   buildUrl: (query: string) => URL;
   parseResults: (html: string) => WebSearchResult[];
   supportsQuery?: (query: string) => boolean;
+  userAgent?: string;
 }): SearchProvider {
   return {
     id: config.id,
     label: config.label,
     supportsQuery: config.supportsQuery,
     search: async (query, context) => {
+      const headers = buildHtmlHeaders(context.language);
+      if (config.userAgent) {
+        headers["User-Agent"] = config.userAgent;
+      }
       const html = await requestProviderText(
         context.request,
         config.buildUrl(query).toString(),
-        buildHtmlHeaders(context.language)
+        headers
       );
       return config.parseResults(html).slice(0, WEB_SEARCH_MAX_RESULTS);
     }
@@ -570,21 +985,51 @@ async function searchGitHubResults(query: string, context: SearchProviderContext
     return results.slice(0, WEB_SEARCH_MAX_RESULTS);
   }
 
-  throw lastError instanceof Error ? lastError : new Error("GitHub 搜索失败。");
+  // 接口正常返回但没有匹配时是空结果，不是来源失败；只有请求错误才抛。
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+  return [];
 }
 
-const BING_PROVIDER = buildHtmlProvider({
+function buildBingSearchUrl(query: string, format: "rss" | "html"): URL {
+  // www.bing.com 会 302 到 cn.bing.com；直接请求国内入口，省一次跳转。
+  const url = new URL("https://cn.bing.com/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("mkt", "zh-CN");
+  url.searchParams.set("setlang", "zh-Hans");
+  if (format === "rss") {
+    url.searchParams.set("format", "rss");
+  }
+  return url;
+}
+
+const BING_PROVIDER: SearchProvider = {
   id: "bing",
   label: "Bing",
-  buildUrl: (query) => {
-    const url = new URL("https://cn.bing.com/search");
-    url.searchParams.set("q", query);
-    url.searchParams.set("mkt", "zh-CN");
-    url.searchParams.set("setlang", "zh-Hans");
-    return url;
-  },
-  parseResults: (html) => collectBingResults(createSearchDocument(html))
-});
+  search: async (query, context) => {
+    try {
+      const xml = await requestProviderText(
+        context.request,
+        buildBingSearchUrl(query, "rss").toString(),
+        buildHtmlHeaders(context.language)
+      );
+      const rssResults = parseBingRssResults(xml);
+      if (rssResults.length > 0) {
+        return rssResults.slice(0, WEB_SEARCH_MAX_RESULTS);
+      }
+    } catch {
+      // RSS 通道不可用时退回 HTML 结果页，不把这一路失败算到来源健康度上。
+    }
+
+    const html = await requestProviderText(
+      context.request,
+      buildBingSearchUrl(query, "html").toString(),
+      buildHtmlHeaders(context.language)
+    );
+    return collectBingResults(createSearchDocument(html)).slice(0, WEB_SEARCH_MAX_RESULTS);
+  }
+};
 
 const BAIDU_PROVIDER = buildHtmlProvider({
   id: "baidu",
@@ -608,6 +1053,45 @@ const SOGOU_PROVIDER = buildHtmlProvider({
   parseResults: (html) => collectSogouResults(createSearchDocument(html))
 });
 
+const QUARK_PROVIDER = buildHtmlProvider({
+  id: "quark",
+  label: "夸克",
+  buildUrl: (query) => {
+    const url = new URL("https://quark.sm.cn/s");
+    url.searchParams.set("q", query);
+    return url;
+  },
+  parseResults: (html) => collectQuarkResults(createSearchDocument(html)),
+  userAgent: SEARCH_MOBILE_USER_AGENT
+});
+
+const SO_PROVIDER = buildHtmlProvider({
+  id: "so",
+  label: "360",
+  buildUrl: (query) => {
+    const url = new URL("https://m.so.com/s");
+    url.searchParams.set("q", query);
+    return url;
+  },
+  parseResults: (html) => collectSoResults(createSearchDocument(html))
+});
+
+const MWMBL_PROVIDER: SearchProvider = {
+  id: "mwmbl",
+  label: "Mwmbl",
+  supportsQuery: (query) => !/[\u4e00-\u9fff]/.test(query),
+  search: async (query, context) => {
+    const url = new URL("https://api.mwmbl.org/api/v1/search");
+    url.searchParams.set("s", query);
+    const payload = await requestProviderJson<unknown>(
+      context.request,
+      url.toString(),
+      buildJsonHeaders(context.language)
+    );
+    return parseMwmblResults(payload);
+  }
+};
+
 const GITHUB_PROVIDER: SearchProvider = {
   id: "github",
   label: "GitHub",
@@ -616,17 +1100,22 @@ const GITHUB_PROVIDER: SearchProvider = {
 };
 
 const SEARCH_PROVIDERS: Record<SearchProviderId, SearchProvider> = {
+  quark: QUARK_PROVIDER,
   bing: BING_PROVIDER,
   baidu: BAIDU_PROVIDER,
   sogou: SOGOU_PROVIDER,
+  so: SO_PROVIDER,
+  mwmbl: MWMBL_PROVIDER,
   github: GITHUB_PROVIDER
 };
 
 export function getSearchProviderIdsForLanguage(language?: string, query = ""): SearchProviderId[] {
   const normalizedLanguage = getPreferredLanguage(language).toLowerCase();
+  // 中文：夸克移动页是当前免费源里最稳定的；百度 / 搜狗 / 360 保留实现但不进默认链，
+  // 它们在多数网络下会跳验证页。英文：Bing 加 Mwmbl，后者只覆盖英文小站。
   const providerIds: SearchProviderId[] = normalizedLanguage.startsWith("zh")
-    ? ["baidu", "sogou", "bing"]
-    : ["bing", "sogou", "baidu"];
+    ? ["quark", "bing"]
+    : ["bing", "mwmbl"];
   if (isGitHubFocusedQuery(query)) {
     return ["github", ...providerIds];
   }
@@ -691,6 +1180,7 @@ export class WebSearchService {
     const batches: SearchResultBatch<WebSearchResult>[] = [];
     const providerLabels: string[] = [];
     const requestableProviders: SearchProvider[] = [];
+    let respondingProviders = 0;
 
     for (const provider of providers) {
       const health = this.providerHealth.get(provider.id);
@@ -712,30 +1202,35 @@ export class WebSearchService {
       });
     }
 
-    const outcomes = await Promise.all(requestableProviders.map(async (provider) => {
-      try {
-        const providerResults = filterResultsForQuery(
-          normalizedQuery,
-          (await withTimeout(
-            provider.search(normalizedQuery, {
-              request,
-              language
-            }),
-            WEB_SEARCH_PROVIDER_TIMEOUT_MS,
-            `${provider.label} 搜索`
-          )).slice(0, WEB_SEARCH_MAX_RESULTS)
-        );
-        return { provider, results: providerResults };
-      } catch (error) {
-        return { provider, error };
-      }
-    }));
+    const outcomes = await collectProviderOutcomes(
+      requestableProviders,
+      async (provider) => filterResultsForQuery(
+        normalizedQuery,
+        (await withTimeout(
+          provider.search(normalizedQuery, {
+            request,
+            language
+          }),
+          WEB_SEARCH_PROVIDER_TIMEOUT_MS,
+          `${provider.label} 搜索`
+        )).slice(0, WEB_SEARCH_MAX_RESULTS)
+      ).filter((result) => passesQueryCoverage(result, normalizedQuery)),
+      options.providerGraceMs ?? WEB_SEARCH_PROVIDER_GRACE_MS
+    );
 
     for (const outcome of outcomes) {
       const { provider } = outcome;
       const health = this.providerHealth.get(provider.id);
 
-      if ("error" in outcome) {
+      if (outcome.skipped) {
+        options.onProgress?.({
+          level: "info",
+          message: `${provider.label} 未在宽限期内返回，本轮跳过。`
+        });
+        continue;
+      }
+
+      if (outcome.error !== undefined) {
         const message = toErrorMessage(outcome.error);
         errors.push(`${provider.label}：${message}`);
         const nextFailureCount = (health?.consecutiveFailures ?? 0) + 1;
@@ -761,15 +1256,17 @@ export class WebSearchService {
       }
 
       this.providerHealth.delete(provider.id);
-      if (outcome.results.length > 0) {
+      respondingProviders += 1;
+      const providerResults = outcome.results ?? [];
+      if (providerResults.length > 0) {
         batches.push({
           query: normalizedQuery,
-          results: outcome.results
+          results: providerResults
         });
         providerLabels.push(provider.label);
         options.onProgress?.({
           level: "info",
-          message: `${provider.label} 返回 ${outcome.results.length} 条结果。`
+          message: `${provider.label} 返回 ${providerResults.length} 条结果。`
         });
       } else {
         options.onProgress?.({
@@ -800,7 +1297,9 @@ export class WebSearchService {
       };
     }
 
-    if (errors.length > 0) {
+    // 只要有一个来源正常应答（哪怕 0 条），就不把结果页失败升级成整组查询失败；
+    // 全部来源都失败时才抛错，避免“360 验证页”掩盖“其他来源没搜到”。
+    if (errors.length > 0 && respondingProviders === 0) {
       throw new Error(errors.join("；"));
     }
 

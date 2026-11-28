@@ -36,7 +36,6 @@ function createHarness(ChatViewDraftRuntime) {
     messageId: "user-1",
     originalDraft: "原草稿",
     originalAttachments: [],
-    originalKnowledgeBaseIndexPath: "Sidet/Wiki/Index.md",
     originalWebSearchEnabled: true
   };
   let chipSyncCount = 0;
@@ -132,14 +131,12 @@ async function assertEditingStateWaitsForReplacementCommit(module) {
   const harness = createHarness(module.ChatViewDraftRuntime);
   let seenDraft = null;
   let seenAttachments = null;
-  let seenKnowledgeBaseOverride = "unreached";
   let seenWebSearchEnabledOverride = "unreached";
   let editingStateBeforeCommit = null;
   let editingStateAfterCommit = "unreached";
   harness.controller.sendMessageFromLeaf = async (_leaf, draft, attachments, options) => {
     seenDraft = draft;
     seenAttachments = attachments;
-    seenKnowledgeBaseOverride = options?.selectedKnowledgeBaseIndexPathOverride ?? null;
     seenWebSearchEnabledOverride = options?.webSearchEnabledOverride ?? null;
     editingStateBeforeCommit = harness.getEditingState()?.messageId ?? null;
     options?.onReplacementCommit?.();
@@ -154,7 +151,6 @@ async function assertEditingStateWaitsForReplacementCommit(module) {
   );
   assert.equal(seenDraft, "编辑后的消息", "send should use the edited draft content");
   assert.deepEqual(seenAttachments, [], "send should forward cleared attachment list");
-  assert.equal(seenKnowledgeBaseOverride, "Sidet/Wiki/Index.md", "edit resend should preserve the original knowledge base selection");
   assert.equal(seenWebSearchEnabledOverride, true, "edit resend should preserve the original web search enabled state");
   assert.equal(editingStateBeforeCommit, "user-1", "editing state should still exist before replacement commit");
   assert.equal(editingStateAfterCommit, null, "replacement commit should clear editing state");
@@ -227,7 +223,7 @@ async function assertHomeIntentContextUsesTheNormalSendChain(module) {
   const harness = createHarness(module.ChatViewDraftRuntime);
   harness.setEditingState(null);
   harness.setLocalDraft("把这个想法整理成卡片");
-  harness.setRequestContextPrefix("Sidet 首页 Wiki 卡片意图");
+  harness.setRequestContextPrefix("Sidet 首页快捷意图");
 
   let seenOptions = null;
   harness.controller.sendMessageFromLeaf = async (_leaf, _draft, _attachments, options) => {
@@ -238,7 +234,7 @@ async function assertHomeIntentContextUsesTheNormalSendChain(module) {
   assert.equal(sent, true);
   assert.equal(
     seenOptions?.requestContextPrefix,
-    "Sidet 首页 Wiki 卡片意图",
+    "Sidet 首页快捷意图",
     "the transient home intent must flow through the existing send context instead of a parallel sender"
   );
 }

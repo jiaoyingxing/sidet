@@ -16,7 +16,6 @@ import {
   shouldUnmountVirtualItem,
   type VirtualMessageRect
 } from "./chat-view-virtual-window";
-import { renderMessageKnowledgeBaseRouting } from "./chat-message-knowledge-base-routing";
 import { recordChatRenderTrace } from "./chat-view-render-trace";
 import { recordChatScrollTrace } from "./chat-scroll-trace";
 import type { ChatViewAssistantRendering } from "./chat-view-assistant-rendering";
@@ -70,11 +69,6 @@ interface ChatViewConversationRuntimeOptions {
     conversation: ConversationRecord,
     message: MessageRecord
   ) => void;
-  renderWikiMaintenancePlanAction: (
-    parentEl: HTMLDivElement,
-    conversation: ConversationRecord,
-    message: MessageRecord
-  ) => void;
   renderAnswerSources: (parentEl: HTMLDivElement, message: MessageRecord) => void;
   renderAnswerActions: (
     parentEl: HTMLDivElement,
@@ -123,7 +117,6 @@ export class ChatViewConversationRuntime {
   private lastMessageRevision: string | null = null;
   private lastOtherMessagesRevision: string | null = null;
   private lastFullRenderKey: string | null = null;
-  private lastKnowledgeBaseRoutingRevision: string | null = null;
   private lastRenderedMessageCount = 0;
   private markdownRenderGeneration = 0;
   private virtualConversationId: string | null = null;
@@ -152,7 +145,6 @@ export class ChatViewConversationRuntime {
     this.lastMessageRevision = null;
     this.lastOtherMessagesRevision = null;
     this.lastFullRenderKey = null;
-    this.lastKnowledgeBaseRoutingRevision = null;
     this.lastRenderedMessageCount = 0;
     this.revealForceHydrateUntilMs = 0;
     this.snapshotAnchorForceHydrateUntilMs = 0;
@@ -916,14 +908,11 @@ export class ChatViewConversationRuntime {
     }
 
     const lastMessage = conversation.messages[conversation.messages.length - 1];
-    const knowledgeBaseRoutingRevision = this.buildKnowledgeBaseRoutingRevision(conversation)
-      ?? "no-knowledge-base-routing";
     return [
       conversation.id,
       conversation.messages.length,
       this.buildMessageSignature(lastMessage),
-      this.buildOtherMessagesRevision(conversation),
-      knowledgeBaseRoutingRevision
+      this.buildOtherMessagesRevision(conversation)
     ].join(":");
   }
 
@@ -951,48 +940,6 @@ export class ChatViewConversationRuntime {
       message.activeAnswerVariantIndex ?? 0,
       message.answerVariants?.length ?? 0
     ].join("~");
-  }
-
-  buildKnowledgeBaseRoutingRevision(conversation: ConversationRecord | null): string | null {
-    if (!conversation) {
-      return null;
-    }
-    let latestKnowledgeBaseRouting: MessageRecord["knowledgeBaseRouting"];
-    let latestKnowledgeBaseRoutingMessageId: string | null = null;
-    for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
-      const message = conversation.messages[index];
-      if (message.role === "user" && message.knowledgeBaseRouting) {
-        latestKnowledgeBaseRouting = message.knowledgeBaseRouting;
-        latestKnowledgeBaseRoutingMessageId = message.id;
-        break;
-      }
-    }
-    if (!latestKnowledgeBaseRouting || !latestKnowledgeBaseRoutingMessageId) {
-      return "no-knowledge-base-routing";
-    }
-    return [
-      latestKnowledgeBaseRoutingMessageId,
-      latestKnowledgeBaseRouting.mode,
-      latestKnowledgeBaseRouting.displayName,
-      latestKnowledgeBaseRouting.status ?? "complete",
-      latestKnowledgeBaseRouting.resultCount,
-      latestKnowledgeBaseRouting.hits
-        .map((hit) => `${hit.path}|${hit.basename}|${hit.kindLabel}`)
-        .join(",")
-    ].join(":");
-  }
-
-  private findKnowledgeBaseRoutingForAssistant(
-    conversation: ConversationRecord,
-    messageIndex: number
-  ): MessageRecord["knowledgeBaseRouting"] {
-    for (let index = messageIndex - 1; index >= 0; index -= 1) {
-      const message = conversation.messages[index];
-      if (message.role === "user") {
-        return message.knowledgeBaseRouting;
-      }
-    }
-    return undefined;
   }
 
   private renderMessageItem(
@@ -1067,21 +1014,10 @@ export class ChatViewConversationRuntime {
         this.options.openWebpageAttachmentPreview(attachment);
       }
     });
-    if (message.role === "assistant") {
-      const knowledgeBaseRouting = this.findKnowledgeBaseRoutingForAssistant(
-        conversation,
-        messageIndex
-      );
-      if (knowledgeBaseRouting) {
-        renderMessageKnowledgeBaseRouting(contentSurface, knowledgeBaseRouting, {
-          controller: this.options.controller
-        });
-      }
-    } else if (this.options.messageActions.isLatestUserMessage(conversation, message)) {
+    if (this.options.messageActions.isLatestUserMessage(conversation, message)) {
       this.options.messageActions.renderUserMessageActions(messageSurface, conversation, message);
     }
     this.options.renderAnswerSources(itemEl, message);
-    this.options.renderWikiMaintenancePlanAction(itemEl, conversation, message);
     this.options.renderInlineToolAction(itemEl, conversation, message);
     this.options.renderAnswerActions(itemEl, conversation, message);
     return markdownRenderPromise;
@@ -1115,7 +1051,6 @@ export class ChatViewConversationRuntime {
       this.options.messageActions.clearEditingMessageState();
     }
     const messageRevision = this.buildMessageRevision(conversation);
-    const knowledgeBaseRoutingRevision = this.buildKnowledgeBaseRoutingRevision(conversation);
     this.lastOtherMessagesRevision = this.buildOtherMessagesRevision(conversation);
     const editingMessageIndex = conversation
       ? this.options.messageActions.getEditingMessageIndex(conversation)
@@ -1251,7 +1186,6 @@ export class ChatViewConversationRuntime {
       });
     }
 
-    this.lastKnowledgeBaseRoutingRevision = knowledgeBaseRoutingRevision;
     this.restoreMessageScroll(scrollSnapshot, currentConversationId, messageRevision);
     this.syncConversationChrome();
     this.setupDeferredMarkdownObserver(conversation.id, renderGeneration);
@@ -1387,10 +1321,6 @@ export class ChatViewConversationRuntime {
       : null;
     const currentConversationId = conversation?.id ?? null;
     const nextMessageRevision = this.buildMessageRevision(conversation);
-    const nextKnowledgeBaseRoutingRevision = this.buildKnowledgeBaseRoutingRevision(conversation);
-    const knowledgeBaseRoutingChanged =
-      currentConversationId === this.lastConversationId &&
-      nextKnowledgeBaseRoutingRevision !== this.lastKnowledgeBaseRoutingRevision;
     if (
       currentConversationId === this.lastConversationId &&
       nextMessageRevision === this.lastMessageRevision
@@ -1403,7 +1333,6 @@ export class ChatViewConversationRuntime {
       currentConversationId === this.lastConversationId &&
       this.buildOtherMessagesRevision(conversation) !== this.lastOtherMessagesRevision;
     if (
-      !knowledgeBaseRoutingChanged &&
       !otherMessagesChanged &&
       currentConversationId === this.lastConversationId &&
       conversation &&
@@ -1463,7 +1392,6 @@ export class ChatViewConversationRuntime {
     this.lastRenderedMessageCount = 0;
     this.lastConversationId = conversationId;
     this.lastMessageRevision = messageRevision;
-    this.lastKnowledgeBaseRoutingRevision = null;
     this.pendingScrollIntent = "none";
     this.options.setScrollPinnedToBottom(true);
   }

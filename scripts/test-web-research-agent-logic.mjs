@@ -99,6 +99,27 @@ function assertParseQueries(agent) {
     ["alpha", "beta"],
     "JSON arrays should be supported"
   );
+  assert.deepEqual(
+    agent.parseResearchQueries(
+      '{"intent":"查当地天气","ambiguities":[],"queries":["汉阴 天气","汉阴 天气预报 实况"]}',
+      4
+    ),
+    ["汉阴 天气", "汉阴 天气预报 实况"],
+    "the intent-plan JSON object should expose only queries"
+  );
+  assert.deepEqual(
+    agent.parseResearchQueries(
+      '```json\n{"intent":"查当地天气","queries":["汉阴 天气"]}\n```',
+      4
+    ),
+    ["汉阴 天气"],
+    "fenced intent-plan JSON should be supported"
+  );
+  assert.deepEqual(
+    agent.parseResearchQueries('{"queries":[{"query":"汉阴 天气"},{"q":"汉阴 气温"}]}', 4),
+    ["汉阴 天气", "汉阴 气温"],
+    "query objects should be tolerated instead of failing the whole plan"
+  );
   assert.deepEqual(agent.parseResearchQueries("1. a\n2. b\n3. c", 2), ["a", "b"]);
   assert.deepEqual(agent.parseResearchQueries("", 4), []);
   assert.deepEqual(agent.parseResearchQueries("搜索词：\n查询：\n", 4), []);
@@ -163,8 +184,8 @@ async function assertHappyRound(agent) {
       return {
         providerLabel: "Bing + 百度",
         results: [
-          makeResult("https://a.com/1", "A", "a snippet"),
-          makeResult("https://b.com/1", "B", "b snippet")
+          makeResult("https://a.com/1", "Alpha 结果", "alpha snippet"),
+          makeResult("https://b.com/1", "Beta 结果", "beta snippet")
         ]
       };
     },
@@ -197,6 +218,84 @@ async function assertHappyRound(agent) {
   assert.equal(budget.queries, 2);
   assert.equal(budget.pages, 2);
   assert.equal(budget.modelCalls, 2, "query expansion and evidence compression should both be charged");
+}
+
+async function assertRawEvidenceFastPath(agent) {
+  const budget = agent.createResearchBudget({
+    maxQueries: 4,
+    maxPages: 3,
+    maxModelCalls: 4
+  }, () => 0);
+  let compressCalls = 0;
+  const result = await agent.runWebResearchRound({
+    round: 1,
+    question: "测试问题",
+    budget,
+    alreadyFetchedUrls: new Set(),
+    sourceStart: 1,
+    signal: new AbortController().signal,
+    expandQueries: async () => "alpha",
+    searchMany: async () => ({
+      providerLabel: "Bing",
+      results: [makeResult("https://a.com/1", "Alpha 页面", "alpha 短摘要")]
+    }),
+    fetchPage: async (url) => ({
+      title: "A",
+      url,
+      content: "短正文"
+    }),
+    compressEvidence: async () => {
+      compressCalls += 1;
+      return "不应调用压缩";
+    },
+    evidenceCharLimit: 2_000,
+    skipCompressionWhenFits: true
+  });
+
+  assert.equal(compressCalls, 0, "small evidence should skip the compression model call");
+  assert.equal(budget.modelCalls, 1, "only query expansion should be charged");
+  assert.match(result.evidenceText, /已读网页/);
+  assert.match(result.evidenceText, /短正文/);
+  assert.equal(result.status, "ok");
+}
+
+async function assertCompressionStaysBounded(agent) {
+  const budget = agent.createResearchBudget({
+    maxQueries: 4,
+    maxPages: 3,
+    maxModelCalls: 4
+  }, () => 0);
+  let compressCalls = 0;
+  const result = await agent.runWebResearchRound({
+    round: 1,
+    question: "测试问题",
+    budget,
+    alreadyFetchedUrls: new Set(),
+    sourceStart: 1,
+    signal: new AbortController().signal,
+    expandQueries: async () => "alpha",
+    searchMany: async () => ({
+      providerLabel: "Bing",
+      results: [makeResult("https://a.com/1", "Alpha 页面", "alpha 摘要")]
+    }),
+    fetchPage: async (url) => ({
+      title: "A",
+      url,
+      content: "长正文".repeat(600)
+    }),
+    compressEvidence: async (_question, _input, maxChars) => {
+      compressCalls += 1;
+      assert.equal(maxChars, 300, "compression should use the round compression limit");
+      return "压缩后的证据 ".repeat(100);
+    },
+    evidenceCharLimit: 1_000,
+    compressionCharLimit: 300,
+    skipCompressionWhenFits: true
+  });
+
+  assert.equal(compressCalls, 1, "oversized evidence should still be compressed");
+  assert.equal(budget.modelCalls, 2, "query expansion and compression should both be charged");
+  assert.match(result.evidenceText, /证据已截断/);
 }
 
 async function assertExpansionFallback(agent) {
@@ -286,9 +385,9 @@ async function assertPartialFetch(agent) {
     searchMany: async () => ({
       providerLabel: "Bing",
       results: [
-        makeResult("https://a.com/1", "A"),
-        makeResult("https://b.com/1", "B"),
-        makeResult("https://c.com/1", "C")
+        makeResult("https://a.com/1", "Alpha 页面"),
+        makeResult("https://b.com/1", "Beta 页面"),
+        makeResult("https://c.com/1", "Gamma 页面")
       ]
     }),
     fetchPage: async (url) => {
@@ -348,10 +447,10 @@ async function assertBudgetAndAbort(agent) {
       chargedSearchCalled = true;
       return {
         providerLabel: "Bing",
-        results: [makeResult("https://a.com/1", "A")]
+        results: [makeResult("https://a.com/1", "Alpha 页面")]
       };
     },
-    fetchPage: async (url) => ({ title: "A", url, content: "正文" }),
+    fetchPage: async (url) => ({ title: "Alpha 页面", url, content: "正文" }),
     compressEvidence: async () => "证据 [1]"
   });
   assert.equal(chargedSearchCalled, true, "a charged round should still run inside the agent");
@@ -378,13 +477,153 @@ async function assertBudgetAndAbort(agent) {
   assert.match(abortResult.evidenceText, /已取消/);
 }
 
+function assertRelevantPassages(agent) {
+  const markdown = [
+    "# 导航",
+    "首页 产品 关于我们 登录".repeat(8),
+    "",
+    "## 背景",
+    "这是一段与问题无关的背景介绍，讲的是别的城市和别的年份。".repeat(4),
+    "",
+    "## 实况",
+    "汉阴县今天白天晴，最高气温 18 摄氏度，东南风 2 级。".repeat(3),
+    "",
+    "页脚 版权 联系方式".repeat(20)
+  ].join("\n\n");
+
+  const passages = agent.selectRelevantPassages(markdown, "汉阴 天气 气温", 600);
+  assert.match(passages, /最高气温 18 摄氏度/, "相关段落应被保留");
+  assert.ok(passages.length <= 600, "相关段落不应超过预算");
+
+  assert.equal(
+    agent.extractContentDate("发布时间：2026-11-27 08:00\n正文"),
+    "2026-11-27"
+  );
+  assert.equal(agent.extractContentDate("没有任何日期"), null);
+}
+
+async function assertAttemptFeedbackAndQueryGuard(agent) {
+  const budget = agent.createResearchBudget({
+    maxQueries: 4,
+    maxPages: 2,
+    maxModelCalls: 4
+  }, () => 0);
+  let receivedAttempts = null;
+  let searchedQueries = null;
+
+  const result = await agent.runWebResearchRound({
+    round: 2,
+    question: "汉阴 天气",
+    budget,
+    previousAttempts: [{
+      question: "汉阴天气",
+      queries: ["汉阴 天气"],
+      hosts: ["pc6.com"],
+      pageCount: 0
+    }],
+    alreadyFetchedUrls: new Set(),
+    sourceStart: 1,
+    signal: new AbortController().signal,
+    expandQueries: async (_question, _maxQueries, attempts) => {
+      receivedAttempts = attempts;
+      return JSON.stringify({
+        intent: "查当地天气",
+        answerNeed: "今天的实况与气温",
+        queries: [
+          "汉阴 天气",
+          "汉阴 天气预报",
+          `汉阴 天气 ${"实况".repeat(30)}`
+        ]
+      });
+    },
+    searchMany: async (queries) => {
+      searchedQueries = queries;
+      return {
+        providerLabel: "Bing",
+        results: [{
+          ...makeResult("https://a.com/1", "汉阴天气", "今天晴"),
+          publishedAt: "2026-11-27"
+        }]
+      };
+    },
+    fetchPage: async (url) => ({
+      title: "汉阴天气",
+      url,
+      content: "发布时间：2026-11-27\n\n汉阴今天晴，最高气温 18 摄氏度。"
+    }),
+    compressEvidence: async () => "不应调用压缩",
+    evidenceCharLimit: 2_000,
+    skipCompressionWhenFits: true
+  });
+
+  assert.deepEqual(
+    receivedAttempts.map((attempt) => attempt.hosts[0]),
+    ["pc6.com"],
+    "上一轮命中站点应回传给检索前理解"
+  );
+  assert.deepEqual(
+    searchedQueries,
+    ["汉阴 天气预报"],
+    "与上一轮重复、超长的查询应被丢弃后继续执行剩余查询"
+  );
+  assert.match(result.evidenceText, /日期: 2026-11-27/);
+  assert.match(result.evidenceText, /最高气温 18 摄氏度/);
+  assert.equal(result.status, "ok");
+}
+
+async function assertOffTopicResultsDropped(agent) {
+  const budget = agent.createResearchBudget({
+    maxQueries: 2,
+    maxPages: 2,
+    maxModelCalls: 3
+  }, () => 0);
+  const fetched = [];
+  const progress = [];
+
+  const result = await agent.runWebResearchRound({
+    round: 1,
+    question: "汉阴县 天气预报",
+    budget,
+    alreadyFetchedUrls: new Set(),
+    sourceStart: 1,
+    signal: new AbortController().signal,
+    expandQueries: async () => "汉阴 天气",
+    searchMany: async () => ({
+      providerLabel: "Bing",
+      results: [
+        makeResult("https://weather.com.cn/a", "汉阴天气预报", "汉阴今天晴，最高气温18℃"),
+        makeResult("https://rili.com.cn/b", "2026年11月日历", "日历查询"),
+        makeResult("https://baike.baidu.com/c", "开源笔记软件", "开源项目介绍")
+      ]
+    }),
+    fetchPage: async (url) => {
+      fetched.push(url);
+      return { title: "汉阴天气", url, content: "汉阴今天晴" };
+    },
+    compressEvidence: async () => "结论 [1]",
+    onProgress: (event) => progress.push(event)
+  });
+
+  assert.equal(result.results.length, 1, "无关结果不应进入候选");
+  assert.deepEqual(fetched, ["https://weather.com.cn/a"], "只应读取相关页面");
+  assert.ok(
+    progress.some((event) => /丢弃 2 条与问题无关的结果/.test(event.message)),
+    "过程里应说明丢弃了多少条无关结果"
+  );
+}
+
 async function main() {
   try {
     const agent = await loadBundledModule("src/agent/web-search/research-agent.ts");
+    await assertOffTopicResultsDropped(agent);
     assertBudget(agent);
     assertParseQueries(agent);
     assertSelectPages(agent);
+    assertRelevantPassages(agent);
+    await assertAttemptFeedbackAndQueryGuard(agent);
     await assertHappyRound(agent);
+    await assertRawEvidenceFastPath(agent);
+    await assertCompressionStaysBounded(agent);
     await assertExpansionFallback(agent);
     await assertAllSearchFails(agent);
     await assertPartialFetch(agent);

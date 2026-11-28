@@ -284,12 +284,6 @@ function cloneMessage(message: MessageRecord): MessageRecord {
   return {
     ...message,
     attachments: message.attachments?.map((attachment) => ({ ...attachment })),
-    knowledgeBaseRouting: message.knowledgeBaseRouting
-      ? {
-          ...message.knowledgeBaseRouting,
-          hits: message.knowledgeBaseRouting.hits.map((hit) => ({ ...hit }))
-        }
-      : undefined,
     metaPanels: message.metaPanels?.map((panel) => ({
       ...panel,
       sources: panel.sources?.map((source) => ({ ...source }))
