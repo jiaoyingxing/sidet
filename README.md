@@ -20,18 +20,6 @@
 
 ## English quick start
 
-Sidet turns Obsidian's new tab into an AI chat home page. Notes, selections, webpages, and images can be brought into a conversation, and commands from Obsidian or other plugins can be pinned to the home page or bound to a URL.
-
-### Installation
-
-1. Open **Settings → Community plugins**.
-2. Search for **Sidet**, then select **Install** and **Enable**.
-3. Sidet requires Obsidian `1.11.4` or later.
-
-### Usage
-
-Open a new tab to reach the Sidet home page, then type a question or choose a context source. Model configurations and API keys are managed in **Settings → Sidet**. Conversations stay in local plugin data until you confirm a write-back.
-
 The full English guide is available in [README-en.md](./README-en.md).
 
 接入你的 API，就能获得一个可以对话的内置轻 Agent：读取、编辑、生成笔记，提供非常完整的交互体验，尤其适配移动端操作。打开新标签页，就是它的主页。

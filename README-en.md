@@ -18,85 +18,39 @@
   </a>
 </p>
 
-Turns Obsidian's new tab into an AI chat home page, ready to bring in the current note, selections, webpages, and images as needed.
+Plug in your API key and you get a built-in lightweight agent you can talk to: it reads, edits, and creates notes, with a highly polished conversation experience designed especially for mobile. Open a new tab, and that tab is its home page.
 
-Any command—whether native to Obsidian or from another plugin—can also be pinned as a home-page icon, or bound to a URL for one-click invocation from shortcuts.
+## 1. Installation
 
-## 1. Main Features
+1. Open Obsidian settings and go to **Community plugins**.
+2. Search for `Sidet`, then install and enable it. Requires Obsidian `1.11.4` or later.
 
-| Feature | Description |
-| --- | --- |
-| 🏠 Home and pinned commands | Creating a tab opens or focuses Sidet home; when home is already active, you can continue to a native blank tab. Sidet, Obsidian, and other-plugin commands can be pinned to the home page. |
-| 💬 Conversations | Continuous conversations, streaming responses, history, and per-conversation model selection. |
-| 📥 Notes and materials | Bring the current note, a selection, webpages, and images into a conversation. |
-| 📚 Knowledge bases | Search one knowledge base or all knowledge bases. Search currently runs locally with keywords. |
-| 🗂️ Wiki organization | Turn the current input into a Wiki-card draft, organize a conversation or note into a knowledge base, and create `Index.md` for a folder. |
-| 🌐 Webpages and web search | Add a specific webpage to a conversation or enable web search for the current conversation. |
-| 📝 Controlled write-back | Preview the result, then create a note, append to an existing note, or replace a selected note. |
-| 📂 Conversation management | Use the right sidebar to create, search, pin, organize, and switch conversations, or archive and export them. Archived conversations can be restored or deleted from settings. |
-| 📱 Desktop and mobile | Conversations use the main tab area and the sidebar manages sessions. Input, keyboard behavior, scrolling, and layout are adapted for phones. |
+You can also use BRAT (add `https://github.com/jiaoyingxing/sidet`), or download `main.js`, `manifest.json`, and `styles.css` from [GitHub Releases](https://github.com/jiaoyingxing/sidet/releases) into `<your-vault>/.obsidian/plugins/sidet/`.
 
-## 2. A Typical Workflow
+## 2. Basic usage
 
 1. Create an Obsidian tab to open or focus the Sidet home page.
-2. Type a question directly, or first select knowledge-base search, webpage clipping, web search, or Wiki cards.
-3. Add the current note, a selection, a webpage, or an image when needed.
-4. Continue asking, organizing, and revising in the conversation.
-5. Preview anything you want to keep, then confirm the write-back action. Everything else can remain in conversation history.
+2. Type a question; attach the current note, a selection, a webpage, or an image when needed.
+3. Keep asking, organizing, and revising in the conversation.
+4. To keep a result, preview it first and confirm the write-back (create a note / append / replace); anything you don't save stays in the conversation history.
 
-## 3. Main Chat and Right Sidebar
+Conversations run in Obsidian's main tab area; the right sidebar is a full-featured conversation list — creating, title search, pinning, folders, switching, archiving, and exporting all live there. Clicking a conversation opens it in the main tab area instead of squeezing the chat into the narrow sidebar. Archived conversations can be restored or deleted from settings.
 
-Sidet keeps the active conversation in Obsidian's main tab area and uses the right sidebar only for the conversation list. Opening a conversation from the list shows it in the main area instead of squeezing the chat into the sidebar.
+**Quick entry points**: pin up to 8 frequently used commands to the home page (Obsidian native and other-plugin commands both work). Sidet also ships two Obsidian URLs — "Open new conversation" and "Import clipboard" — and you can add up to 8 custom URLs for one-click invocation from mobile or desktop shortcuts.
 
-The sidebar is restored after the workspace starts and can also be reopened with the **Open conversation list** command. It supports creating conversations, title search, pinning, folders, and switching. Conversation menus provide move, archive, and export actions, and the active conversation is marked in the list.
+## 3. Web search
 
-## 4. Home Shortcuts
+- For a specific webpage: enter its URL to add the page content to the current conversation.
+- For external research: enable web search in the conversation — Sidet generates the search queries, searches and reads pages as needed, then answers with sources.
+- With "Allow the model to search the web automatically" enabled in settings, the model searches on its own when needed (since `0.3.8`).
 
-Up to eight commands can be pinned to the home page. Obsidian commands and commands from other plugins can all be pinned; among Sidet's own commands, only “Open Sidet”, “Open conversation list”, and “New conversation” are available—context-dependent or write-related Sidet commands do not enter home or URL entries. Pinned items can be reordered and given custom icons. If no Sidet home page exists, creating a tab opens one. If home is in the background, Sidet focuses it. Only when home is already active does the next new-tab action open Obsidian's native blank page.
+## 4. Models and API keys
 
-## 5. URL Launching
-
-Sidet includes two Obsidian URLs for opening a new conversation and importing the clipboard. You can also configure up to eight custom URLs for frequently used commands.
-
-These links can be used with mobile shortcuts, desktop shortcuts, or other apps. A link can open a new conversation, import clipboard content, or run its assigned command.
-
-## 6. Model Services
-
-Sidet can save multiple model configurations. Each configuration has its own provider, model, endpoint, and API key, and one configuration can be selected as the default.
-
-New conversations use the current default model, while existing conversations keep their assigned model. If an assigned model is deleted, affected conversations fall back to the current default. API keys are stored in Obsidian `SecretStorage`, not in conversation history or ordinary plugin settings.
+Sidet can save multiple model configurations. Each has its own provider, model, endpoint, and API key, and one can be set as the default. API keys are stored in Obsidian `SecretStorage` (isolated by device and vault), never in conversation history or ordinary plugin settings.
 
 Sidet does not include a model account. You provide and manage the model service, account, API key, usage fees, and service limits.
 
-## 7. Knowledge Bases and Wiki
-
-Knowledge-base search can target one knowledge base or all of them. Search currently runs locally with keywords and does not call a model. Results are attached to the bottom of the reply, each showing a type, how it matched, and the matched fragment; clicking a result opens the note directly.
-
-To organize new material, you can turn the current conversation or note into a knowledge card; Sidet shows a plan or content preview before writing.
-
-Knowledge bases use `Index.md` as the folder entry point. Sidet can create a knowledge-base root page for a selected folder. Maintenance for historical Sidet Wiki-card formatting is available under **Settings → Sidet → Data export** and asks for confirmation before making changes. Files are created or modified only after user confirmation.
-
-## 8. Webpages and Web Search
-
-For a specific webpage, enter its URL to add the page content to the current conversation. For external research, enable web search: Sidet generates a search query, searches and reads pages as needed, then returns an answer with sources.
-
-Knowledge-base search and web search are separate modes and cannot be enabled together. If you have already attached a note, webpage, image, or other explicit material, Sidet handles the request as a normal material-based conversation.
-
-## 9. Conversations, Export, and Notes
-
-Conversation history is stored in plugin data and does not create Markdown files just because a conversation has started. When you want to save something, you can:
-
-- Export the current conversation as Markdown.
-- Create a new note.
-- Append to an existing note.
-- Replace a selected note.
-- Organize the current conversation or note into a knowledge base.
-
-Create, append, and replace actions all show a preview and require confirmation. The export directory can be changed in settings; leaving it blank uses Sidet's default export directory.
-
-Conversations you no longer use can be archived. Archived conversations remain read-only and can be restored or deleted from settings.
-
-## 10. Data and Privacy
+## 5. Data and privacy
 
 | Data | Stored in |
 | --- | --- |
@@ -104,48 +58,20 @@ Conversations you no longer use can be archived. Archived conversations remain r
 | API keys for each model configuration | Obsidian `SecretStorage`, isolated by device and vault |
 
 - The author does not collect your API keys, conversations, notes, or other personal information.
-- When you use a cloud model, web search, or a webpage service, the content required for the request is sent through the third-party service you configured. Its fees, limits, and data practices are governed by that provider.
-- Model requests go only to the endpoint configured for that model. Web search sends the query to the built-in search providers (Bing, Baidu, Sogou); GitHub-focused searches call the GitHub API; adding a webpage requests the URL you provide.
-- Sidet does not modify notes by default or run autonomous background tasks. Creating, appending, or replacing a note requires confirmation.
+- Conversation history stays in plugin data; starting a conversation never creates Markdown files in your vault.
+- Model requests go only to the endpoint configured for that model. Web search sends queries to the built-in search providers (Bing, Baidu, Sogou); GitHub-focused searches call the GitHub API; adding a webpage requests the URL you provide.
+- Sidet centers on deliberate input, selection, and confirmation, and runs no autonomous background tasks; creating, appending, or replacing a note always requires your confirmation.
 - Keep independent backups of important notes.
 
-## 11. Current Scope
+## 6. Removed in `0.3.8`
 
-Sidet currently centers on deliberate user input, selection, and confirmation. Its web features search and reference webpages; they do not provide a full browser with an address bar, tabs, login state, and browsing history. Knowledge-base search currently uses local keywords and does not automatically aggregate across directories.
+Knowledge bases, Wiki, and user skills have been removed from Sidet:
 
-If your day-to-day work happens in Obsidian, you can start from Sidet home to ask questions, search your own knowledge, work with web material, or run common commands, then write back only the results worth keeping.
+- The `Sidet/Wiki`, `Sidet/Skills`, and `Sidet/Memory` folders and files you already have are **not deleted, renamed, or migrated** — keep or clean them up as you prefer.
+- The plugin no longer reads, writes, or indexes these directories, and the related settings entries are gone.
+- To find existing notes, keep using the note search in conversations.
 
-## 12. Installation
+## 7. License and contact
 
-Sidet requires Obsidian `1.11.4` or later.
-
-### 12.1 Community Plugins (recommended)
-
-1. Open Obsidian settings and go to **Community plugins**.
-2. Search for `Sidet`.
-3. Install and enable the plugin.
-
-### 12.2 BRAT
-
-1. Install BRAT from Obsidian Community Plugins.
-2. Choose **Add Beta plugin**.
-3. Enter `https://github.com/jiaoyingxing/sidet`.
-4. Enable Sidet in Obsidian settings after installation.
-
-### 12.3 Manual Installation
-
-1. Download `main.js`, `manifest.json`, and `styles.css` from [GitHub Releases](https://github.com/jiaoyingxing/sidet/releases).
-2. Put the three files in `<your-vault>/.obsidian/plugins/sidet/`.
-3. Restart Obsidian or reload community plugins.
-4. Enable Sidet in settings.
-
-## 13. License and source
-
-- Sidet is released under the MIT License; the source code is public in the [GitHub repository](https://github.com/jiaoyingxing/sidet).
-- Building locally requires Node.js 20 or newer: run `npm ci`, then `npm run build` to produce `main.js`; run `npm run test:logic` for the logic tests.
-- See [LICENSE](./LICENSE) for the full terms and [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for third-party notices.
-
-## 14. Contact
-
-- Bugs, reproducible issues, and feature requests: [GitHub Issues](https://github.com/jiaoyingxing/sidet/issues)
-- Community and product updates: search Xiaohongshu for **焦应行** 🔍
+- Sidet is released under the MIT License; the source is public in the [GitHub repository](https://github.com/jiaoyingxing/sidet). Building locally requires Node.js 20+: run `npm ci`, then `npm run build`. See [LICENSE](./LICENSE) and [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for terms and third-party notices.
+- Bugs, reproducible issues, and feature requests: [GitHub Issues](https://github.com/jiaoyingxing/sidet/issues). Community and product updates: search Xiaohongshu (小红书) for **焦应行** 🔍
