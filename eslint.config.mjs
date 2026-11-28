@@ -15,6 +15,9 @@ export default defineConfig([
       // .temp 是本轮诊断 / 一次性导出的本地临时区（不进 Git、不是构筑物），
       // 里面的 .ts 快照不应参与商店扫描同款规则。
       ".temp/**",
+      // .zcode 是编码会话工作流的机器产物（不进 Git、不是构筑物），
+      // 其草稿 / 运行日志不在 tsconfig 内，不应参与扫描。
+      ".zcode/**",
     ],
   },
   ...obsidianmd.configs.recommended,

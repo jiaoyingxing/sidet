@@ -246,7 +246,7 @@ export default class SidetPlugin extends Plugin {
       }
     });
 
-    // 排障命令：不属于 8 条公共产品命令，仅用于移动输入真机取证。
+    // 排障命令：不属于 6 条公共产品命令，仅用于移动输入真机取证。
     this.addCommand({
       id: "export-mobile-input-diagnostic",
       name: "导出移动输入诊断（排障）",
